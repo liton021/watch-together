@@ -2,11 +2,10 @@ import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import 'home_screen.dart';
 import 'watch_together/room_service.dart';
-import 'watch_together/watch_entry_screen.dart';
 
 const Color _background = Color(0xFF0B0E14);
 const Color _panel = Color(0xFF12161F);
@@ -219,7 +218,7 @@ class WatchTogetherApp extends StatelessWidget {
           backgroundColor: Color(0xFF232A3A),
         ),
       ),
-      home: const BrowserScreen(),
+      home: const HomeScreen(),
     );
   }
 }
@@ -265,7 +264,9 @@ class _Bookmark {
 }
 
 class BrowserScreen extends StatefulWidget {
-  const BrowserScreen({super.key});
+  const BrowserScreen({super.key, this.roomCode});
+
+  final String? roomCode;
 
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -521,29 +522,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
       RoomService.instance.isHost && RoomService.instance.code != null;
 
   Future<void> _openWatchEntry() async {
-    final code = await Navigator.of(
+    await Navigator.of(
       context,
-    ).push<String>(MaterialPageRoute(builder: (_) => const WatchEntryScreen()));
-    if (code == null || !mounted) return;
-    await Clipboard.setData(ClipboardData(text: code));
-    if (!mounted) return;
-    setState(() {});
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Room created'),
-        content: Text(
-          'Share this code with your friends:\n\n$code\n\n'
-          'Copied to your clipboard.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
+    ).push(MaterialPageRoute<void>(builder: (_) => const HomeScreen()));
+    if (mounted) setState(() {});
   }
 
   Future<void> _shareVideo() async {
@@ -824,6 +806,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
         children: [
+          if (widget.roomCode != null) ...[
+            _buildSimpleChip(
+              icon: Icons.arrow_back_rounded,
+              label: 'Back to room',
+              onTap: () => Navigator.of(context).pop(),
+            ),
+            const SizedBox(width: 8),
+          ],
           _buildAdBlockChip(),
           const SizedBox(width: 8),
           _buildSimpleChip(
