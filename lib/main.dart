@@ -2,7 +2,11 @@ import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+
+import 'watch_together/room_service.dart';
+import 'watch_together/watch_entry_screen.dart';
 
 const Color _background = Color(0xFF0B0E14);
 const Color _panel = Color(0xFF12161F);
@@ -89,6 +93,30 @@ const String _adBlockerScript = r'''
 })();
 ''';
 
+/// Watches the host's <video> element so play/pause/seek can be broadcast.
+const String _videoHookScript = r'''
+(function () {
+  function hook(v) {
+    if (!v || v.__wtHooked) { return; }
+    v.__wtHooked = true;
+    ['play', 'pause', 'seeked'].forEach(function (event) {
+      v.addEventListener(event, function () {
+        try {
+          window.flutter_inappwebview.callHandler('wtVideoEvent', {
+            event: event,
+            position: v.currentTime
+          });
+        } catch (_) {}
+      });
+    });
+  }
+  setInterval(function () {
+    var v = document.querySelector('video');
+    if (v) { hook(v); }
+  }, 500);
+})();
+''';
+
 bool isAdUri(WebUri? uri) {
   if (uri == null) return false;
   final host = uri.host.toLowerCase();
@@ -163,7 +191,11 @@ const String _homePageHtml = r'''
 </html>
 ''';
 
-void main() => runApp(const WatchTogetherApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await RoomService.instance.initialize();
+  runApp(const WatchTogetherApp());
+}
 
 class WatchTogetherApp extends StatelessWidget {
   const WatchTogetherApp({super.key});
@@ -485,6 +517,49 @@ class _BrowserScreenState extends State<BrowserScreen> {
     await _syncAdBlockerToPage();
   }
 
+  bool get _isHosting =>
+      RoomService.instance.isHost && RoomService.instance.code != null;
+
+  Future<void> _openWatchEntry() async {
+    final code = await Navigator.of(
+      context,
+    ).push<String>(MaterialPageRoute(builder: (_) => const WatchEntryScreen()));
+    if (code == null || !mounted) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    if (!mounted) return;
+    setState(() {});
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Room created'),
+        content: Text(
+          'Share this code with your friends:\n\n$code\n\n'
+          'Copied to your clipboard.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _shareVideo() async {
+    if (_currentUrl.isEmpty) {
+      _showMessage('Open a website first, then share the video.');
+      return;
+    }
+    await RoomService.instance.send('playback', <String, dynamic>{
+      'url': _currentUrl,
+      'event': 'play',
+      'position': 0,
+      'at': DateTime.now().toIso8601String(),
+    });
+    _showMessage('Shared with room ${RoomService.instance.code}.');
+  }
+
   /// Drops requests to known ad hosts. Returning null lets them through.
   Future<WebResourceResponse?> _handleAdRequest(
     InAppWebViewController controller,
@@ -636,6 +711,43 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
+  Widget _buildSimpleChip({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: label,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(9),
+          child: Container(
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 15, color: Colors.white54),
+                const SizedBox(width: 5),
+                Text(
+                  label,
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildAdBlockChip() {
     final on = _adBlockerEnabled;
     return Tooltip(
@@ -714,6 +826,20 @@ class _BrowserScreenState extends State<BrowserScreen> {
         children: [
           _buildAdBlockChip(),
           const SizedBox(width: 8),
+          _buildSimpleChip(
+            icon: Icons.groups_rounded,
+            label: _isHosting ? 'Room ${RoomService.instance.code}' : 'Watch',
+            onTap: _openWatchEntry,
+          ),
+          const SizedBox(width: 8),
+          if (_isHosting) ...[
+            _buildSimpleChip(
+              icon: Icons.cast_rounded,
+              label: 'Share',
+              onTap: _shareVideo,
+            ),
+            const SizedBox(width: 8),
+          ],
           for (final bookmark in _bookmarks) ...[
             _BookmarkChip(
               bookmark: bookmark,
@@ -758,14 +884,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
               Expanded(
                 child: InAppWebView(
                   initialData: InAppWebViewInitialData(data: _homePageHtml),
-                  initialUserScripts:
-                      UnmodifiableListView<UserScript>(<UserScript>[
-                        UserScript(
-                          source: _adBlockerScript,
-                          injectionTime:
-                              UserScriptInjectionTime.AT_DOCUMENT_START,
-                        ),
-                      ]),
+                  initialUserScripts: UnmodifiableListView<UserScript>(<
+                    UserScript
+                  >[
+                    UserScript(
+                      source: _adBlockerScript,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
+                    UserScript(
+                      source: _videoHookScript,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
+                  ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
                     supportMultipleWindows: false,
@@ -778,6 +908,22 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   ),
                   onWebViewCreated: (controller) {
                     _controller = controller;
+                    controller.addJavaScriptHandler(
+                      handlerName: 'wtVideoEvent',
+                      callback: (arguments) {
+                        if (!RoomService.instance.isHost) return;
+                        final data = arguments.isNotEmpty
+                            ? arguments.first
+                            : null;
+                        if (data is! Map) return;
+                        RoomService.instance.send('playback', <String, dynamic>{
+                          'url': _currentUrl,
+                          'event': data['event']?.toString() ?? 'play',
+                          'position': data['position'],
+                          'at': DateTime.now().toIso8601String(),
+                        });
+                      },
+                    );
                   },
                   onLoadStart: (controller, url) {
                     if (!mounted) return;

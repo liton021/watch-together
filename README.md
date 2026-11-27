@@ -42,10 +42,31 @@ flutter analyze
 flutter test
 ```
 
+## Watch Together (rooms)
+
+The browser is the host's tool; the app is a watch-together platform.
+
+- Tap **Watch** in the bookmark bar, then **Create room (host)** — the code is copied to your clipboard. Share it.
+- Friends tap **Watch**, enter the code, and **Join room**.
+- The host browses normally and taps **Share** to send the current page to the room.
+- Viewers see only the video: the host's page is loaded with all non-video UI hidden, and play/pause/seek are mirrored from the host.
+- Viewers get chat, reaction buttons and a back button to leave the room.
+- The ad blocker stays on by default for the host.
+
+### Supabase setup
+
+The included build is already connected to a Supabase project through
+`lib/config.dart`. To use your own project, paste its **Project URL** and
+**anon/public (publishable) key** from Project Settings -> API into that file.
+No database tables or RLS policies are needed — rooms use Supabase Realtime
+broadcast, which was verified with a host -> viewer delivery test.
+
+Never put the `service_role` key in this file.
+
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.0.2 release](https://github.com/liton021/watch-together/releases/tag/v0.0.2).
+[v0.1.0 release](https://github.com/liton021/watch-together/releases/tag/v0.1.0).
 
 ## Build APKs
 
