@@ -908,22 +908,27 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   ),
                   onWebViewCreated: (controller) {
                     _controller = controller;
-                    controller.addJavaScriptHandler(
-                      handlerName: 'wtVideoEvent',
-                      callback: (arguments) {
-                        if (!RoomService.instance.isHost) return;
-                        final data = arguments.isNotEmpty
-                            ? arguments.first
-                            : null;
-                        if (data is! Map) return;
-                        RoomService.instance.send('playback', <String, dynamic>{
-                          'url': _currentUrl,
-                          'event': data['event']?.toString() ?? 'play',
-                          'position': data['position'],
-                          'at': DateTime.now().toIso8601String(),
-                        });
-                      },
-                    );
+                    // JS handlers are supported on mobile WebViews only;
+                    // the web preview uses an iframe without that API.
+                    if (!kIsWeb) {
+                      controller.addJavaScriptHandler(
+                        handlerName: 'wtVideoEvent',
+                        callback: (arguments) {
+                          if (!RoomService.instance.isHost) return;
+                          final data = arguments.isNotEmpty
+                              ? arguments.first
+                              : null;
+                          if (data is! Map) return;
+                          RoomService.instance
+                              .send('playback', <String, dynamic>{
+                                'url': _currentUrl,
+                                'event': data['event']?.toString() ?? 'play',
+                                'position': data['position'],
+                                'at': DateTime.now().toIso8601String(),
+                              });
+                        },
+                      );
+                    }
                   },
                   onLoadStart: (controller, url) {
                     if (!mounted) return;
