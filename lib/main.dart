@@ -1,0 +1,703 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+
+const Color _background = Color(0xFF0B0E14);
+const Color _panel = Color(0xFF12161F);
+const Color _field = Color(0xFF1B2130);
+const Color _line = Color(0xFF252C3B);
+const Color _accent = Color(0xFF8B9DFF);
+
+const String _homePageHtml = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watch Together</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: #e8eaf2;
+    background: radial-gradient(circle at 15% 10%, #1d2745 0%, #0b0e14 52%, #06070b 100%);
+  }
+  .card { width: 100%; max-width: 560px; text-align: center; }
+  .logo { font-size: 44px; margin-bottom: 12px; }
+  h1 {
+    margin: 0 0 10px;
+    font-size: 30px;
+    letter-spacing: -0.5px;
+    background: linear-gradient(90deg, #8b9dff, #e879f9);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  p { margin: 0 0 26px; color: #98a1b3; font-size: 15px; line-height: 1.65; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  a {
+    color: #dbe3ff;
+    text-decoration: none;
+    font-size: 14px;
+    padding: 10px 16px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  a:hover { background: rgba(255, 255, 255, 0.12); }
+  .tip { margin-top: 26px; font-size: 12px; color: #5f687a; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🎬</div>
+    <h1>Watch Together Browser</h1>
+    <p>Type any website in the address bar above and press Enter.<br>
+       Back, forward, home and bookmarks are ready when you are.</p>
+    <div class="links">
+      <a href="https://www.youtube.com">YouTube</a>
+      <a href="https://www.wikipedia.org">Wikipedia</a>
+      <a href="https://www.google.com">Google</a>
+      <a href="https://www.netflix.com">Netflix</a>
+    </div>
+    <div class="tip">Milestone 1 — the browser shell.</div>
+  </div>
+</body>
+</html>
+''';
+
+void main() => runApp(const WatchTogetherApp());
+
+class WatchTogetherApp extends StatelessWidget {
+  const WatchTogetherApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: _accent,
+      brightness: Brightness.dark,
+    ).copyWith(surface: _background);
+
+    return MaterialApp(
+      title: 'Watch Together',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: colorScheme,
+        scaffoldBackgroundColor: _background,
+        snackBarTheme: const SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Color(0xFF232A3A),
+        ),
+      ),
+      home: const BrowserScreen(),
+    );
+  }
+}
+
+/// Turns whatever the user typed into a URL.
+///
+/// - `https://example.com` is kept as-is
+/// - `example.com` becomes `https://example.com`
+/// - anything else becomes a Google search
+String normalizeUrl(String input) {
+  final text = input.trim();
+  if (text.isEmpty) return '';
+
+  final lower = text.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://')) {
+    return text;
+  }
+
+  // Keep explicit schemes such as file://, about:, chrome:// untouched.
+  if (RegExp(r'^[a-z][a-z0-9+.-]*://').hasMatch(lower)) {
+    return text;
+  }
+
+  final host = text.split('/').first;
+  final looksLikeHost =
+      !text.contains(' ') &&
+      (host.contains('.') ||
+          host == 'localhost' ||
+          host.startsWith('localhost:') ||
+          host.contains(':'));
+  if (looksLikeHost) {
+    return 'https://$text';
+  }
+
+  return 'https://www.google.com/search?q=${Uri.encodeQueryComponent(text)}';
+}
+
+class _Bookmark {
+  const _Bookmark(this.label, this.url);
+
+  final String label;
+  final String url;
+}
+
+class BrowserScreen extends StatefulWidget {
+  const BrowserScreen({super.key});
+
+  @override
+  State<BrowserScreen> createState() => _BrowserScreenState();
+}
+
+class _BrowserScreenState extends State<BrowserScreen> {
+  InAppWebViewController? _controller;
+
+  final TextEditingController _addressController = TextEditingController();
+  final FocusNode _addressFocus = FocusNode();
+
+  bool _isLoading = false;
+  int _progress = 0;
+  bool _canGoBack = false;
+  bool _canGoForward = false;
+  String _currentUrl = '';
+
+  final List<_Bookmark> _bookmarks = <_Bookmark>[
+    const _Bookmark('YouTube', 'https://www.youtube.com'),
+    const _Bookmark('Wikipedia', 'https://www.wikipedia.org'),
+    const _Bookmark('Google', 'https://www.google.com'),
+    const _Bookmark('Netflix', 'https://www.netflix.com'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _addressFocus.addListener(_handleAddressFocus);
+  }
+
+  @override
+  void dispose() {
+    _addressFocus.removeListener(_handleAddressFocus);
+    _addressFocus.dispose();
+    _addressController.dispose();
+    super.dispose();
+  }
+
+  void _handleAddressFocus() {
+    if (_addressFocus.hasFocus) {
+      _addressController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _addressController.text.length,
+      );
+    } else {
+      _addressController.text = _currentUrl;
+    }
+  }
+
+  bool _isWebUrl(String url) =>
+      url.startsWith('http://') || url.startsWith('https://');
+
+  void _applyUrl(WebUri? uri) {
+    final raw = uri?.toString() ?? '';
+    if (raw.isEmpty) return;
+
+    _currentUrl = _isWebUrl(raw) ? raw : '';
+    if (!_addressFocus.hasFocus) {
+      _addressController.text = _currentUrl;
+    }
+  }
+
+  Future<void> _syncNavigationState() async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    try {
+      final canGoBack = await controller.canGoBack();
+      final canGoForward = await controller.canGoForward();
+      final url = await controller.getUrl();
+      if (!mounted) return;
+
+      setState(() {
+        _canGoBack = canGoBack;
+        _canGoForward = canGoForward;
+        _applyUrl(url);
+      });
+    } catch (_) {
+      // Some platforms (web iframes in particular) restrict history access.
+    }
+  }
+
+  Future<void> _openUrl(String raw) async {
+    final target = normalizeUrl(raw);
+    final controller = _controller;
+    if (target.isEmpty || controller == null) return;
+
+    _addressFocus.unfocus();
+    setState(() {
+      _isLoading = true;
+      _progress = 0;
+      // Show the destination immediately. On Android the WebView will report
+      // the final URL once the page starts loading; on the web preview the
+      // cross-origin iframe cannot report it back to us.
+      _currentUrl = target;
+      if (!_addressFocus.hasFocus) {
+        _addressController.text = target;
+      }
+    });
+
+    await controller.loadUrl(urlRequest: URLRequest(url: WebUri(target)));
+
+    if (kIsWeb && mounted) {
+      // The web build uses an iframe, and cross-origin pages do not report
+      // load completion. Don't leave the toolbar stuck in a loading state.
+      setState(() {
+        _isLoading = false;
+        _progress = 100;
+      });
+    }
+  }
+
+  Future<void> _goHome() async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    _addressFocus.unfocus();
+    setState(() {
+      _currentUrl = '';
+      _addressController.text = '';
+      _isLoading = true;
+      _progress = 0;
+    });
+
+    await controller.loadData(data: _homePageHtml, mimeType: 'text/html');
+
+    if (kIsWeb && mounted) {
+      setState(() {
+        _isLoading = false;
+        _progress = 100;
+      });
+    }
+  }
+
+  Future<void> _goBack() async {
+    final controller = _controller;
+    if (controller == null) return;
+    if (await controller.canGoBack()) {
+      await controller.goBack();
+    }
+  }
+
+  Future<void> _goForward() async {
+    final controller = _controller;
+    if (controller == null) return;
+    if (await controller.canGoForward()) {
+      await controller.goForward();
+    }
+  }
+
+  Future<void> _reloadOrStop() async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    if (_isLoading) {
+      await controller.stopLoading();
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _progress = 0;
+        });
+      }
+    } else {
+      await controller.reload();
+    }
+  }
+
+  Future<void> _bookmarkCurrentPage() async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    final uri = await controller.getUrl();
+    final current = uri?.toString() ?? '';
+    if (current.isEmpty || !_isWebUrl(current)) {
+      _showMessage('Open a website first, then bookmark it.');
+      return;
+    }
+
+    if (_bookmarks.any((bookmark) => bookmark.url == current)) {
+      _showMessage('This page is already bookmarked.');
+      return;
+    }
+
+    final title = (await controller.getTitle())?.trim() ?? '';
+    final label = _shorten(title.isEmpty ? (uri?.host ?? 'Bookmark') : title);
+    if (!mounted) return;
+
+    setState(() {
+      _bookmarks.add(_Bookmark(label, current));
+    });
+    _showMessage('Bookmarked "$label".');
+  }
+
+  void _removeBookmark(_Bookmark bookmark) {
+    final index = _bookmarks.indexOf(bookmark);
+    if (index < 0) return;
+
+    setState(() => _bookmarks.removeAt(index));
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Removed "${bookmark.label}".'),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () {
+              if (!mounted) return;
+              final insertAt = index <= _bookmarks.length
+                  ? index
+                  : _bookmarks.length;
+              setState(() => _bookmarks.insert(insertAt, bookmark));
+            },
+          ),
+        ),
+      );
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
+  }
+
+  static String _shorten(String text, [int max = 24]) {
+    if (text.runes.length <= max) return text;
+    return '${String.fromCharCodes(text.runes.take(max))}…';
+  }
+
+  static String _initial(String label) {
+    final trimmed = label.trim();
+    if (trimmed.isEmpty) return '?';
+    return String.fromCharCodes(trimmed.runes.take(1)).toUpperCase();
+  }
+
+  Widget _toolbarButton({
+    required IconData icon,
+    required String tooltip,
+    VoidCallback? onPressed,
+  }) {
+    return IconButton(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 20),
+      tooltip: tooltip,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+      color: Colors.white,
+      disabledColor: Colors.white24,
+    );
+  }
+
+  Widget _buildToolbar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 8, 8, 6),
+      child: Row(
+        children: [
+          _toolbarButton(
+            icon: Icons.arrow_back_rounded,
+            tooltip: 'Back',
+            onPressed: _canGoBack ? _goBack : null,
+          ),
+          _toolbarButton(
+            icon: Icons.arrow_forward_rounded,
+            tooltip: 'Forward',
+            onPressed: _canGoForward ? _goForward : null,
+          ),
+          _toolbarButton(
+            icon: Icons.home_rounded,
+            tooltip: 'Home',
+            onPressed: _goHome,
+          ),
+          _toolbarButton(
+            icon: _isLoading ? Icons.close_rounded : Icons.refresh_rounded,
+            tooltip: _isLoading ? 'Stop loading' : 'Reload',
+            onPressed: _reloadOrStop,
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: TextField(
+              controller: _addressController,
+              focusNode: _addressFocus,
+              keyboardType: TextInputType.url,
+              textInputAction: TextInputAction.go,
+              autocorrect: false,
+              enableSuggestions: false,
+              style: const TextStyle(fontSize: 13.5, color: Colors.white),
+              onSubmitted: _openUrl,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: 'Search or enter website',
+                hintStyle: const TextStyle(fontSize: 13, color: Colors.white38),
+                prefixIcon: Icon(
+                  _currentUrl.startsWith('https://')
+                      ? Icons.lock_outline_rounded
+                      : (_currentUrl.startsWith('http://')
+                            ? Icons.language_rounded
+                            : Icons.search_rounded),
+                  size: 16,
+                  color: Colors.white38,
+                ),
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 34,
+                  minHeight: 34,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  vertical: 10,
+                  horizontal: 8,
+                ),
+                filled: true,
+                fillColor: _field,
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: const BorderSide(color: _line),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: BorderSide(color: _accent.withValues(alpha: 0.8)),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 2),
+          _toolbarButton(
+            icon: Icons.keyboard_return_rounded,
+            tooltip: 'Go',
+            onPressed: () => _openUrl(_addressController.text),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProgressBar() {
+    return SizedBox(
+      height: 2,
+      child: _isLoading
+          ? LinearProgressIndicator(
+              value: _progress > 0 && _progress < 100 ? _progress / 100 : null,
+              minHeight: 2,
+              backgroundColor: Colors.transparent,
+              color: _accent,
+            )
+          : null,
+    );
+  }
+
+  Widget _buildBookmarkBar() {
+    return SizedBox(
+      height: 42,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+        children: [
+          for (final bookmark in _bookmarks) ...[
+            _BookmarkChip(
+              bookmark: bookmark,
+              onTap: () => _openUrl(bookmark.url),
+              onLongPress: () => _removeBookmark(bookmark),
+            ),
+            const SizedBox(width: 8),
+          ],
+          _AddBookmarkChip(onTap: _bookmarkCurrentPage),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_canGoBack,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _canGoBack) {
+          _goBack();
+        }
+      },
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              Container(
+                decoration: const BoxDecoration(
+                  color: _panel,
+                  border: Border(bottom: BorderSide(color: _line)),
+                ),
+                child: Column(
+                  children: [
+                    _buildToolbar(),
+                    _buildProgressBar(),
+                    _buildBookmarkBar(),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: InAppWebView(
+                  initialData: InAppWebViewInitialData(data: _homePageHtml),
+                  initialSettings: InAppWebViewSettings(
+                    javaScriptEnabled: true,
+                    mediaPlaybackRequiresUserGesture: false,
+                    allowsInlineMediaPlayback: true,
+                    supportZoom: true,
+                    iframeAllow:
+                        'autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-read; clipboard-write',
+                    iframeAllowFullscreen: true,
+                  ),
+                  onWebViewCreated: (controller) {
+                    _controller = controller;
+                  },
+                  onLoadStart: (controller, url) {
+                    if (!mounted) return;
+                    setState(() {
+                      _isLoading = true;
+                      _progress = 0;
+                      _applyUrl(url);
+                    });
+                  },
+                  onLoadStop: (controller, url) {
+                    if (!mounted) return;
+                    setState(() {
+                      _isLoading = false;
+                      _progress = 100;
+                    });
+                    _syncNavigationState();
+                  },
+                  onProgressChanged: (controller, progress) {
+                    if (!mounted) return;
+                    setState(() => _progress = progress);
+                  },
+                  onReceivedError: (controller, request, error) {
+                    if (!mounted) return;
+                    if (request.isForMainFrame ?? false) {
+                      setState(() {
+                        _isLoading = false;
+                        _progress = 0;
+                      });
+                      _showMessage('Could not load this page.');
+                    }
+                  },
+                  onUpdateVisitedHistory: (controller, url, isReload) {
+                    _syncNavigationState();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BookmarkChip extends StatelessWidget {
+  const _BookmarkChip({
+    required this.bookmark,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  final _Bookmark bookmark;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '${bookmark.url}\nLong-press to remove',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress,
+          borderRadius: BorderRadius.circular(9),
+          child: Container(
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 16,
+                  height: 16,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _accent.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    _BrowserScreenState._initial(bookmark.label),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: _accent,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  bookmark.label,
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddBookmarkChip extends StatelessWidget {
+  const _AddBookmarkChip({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Bookmark this page',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(9),
+          child: Container(
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.add_rounded, size: 15, color: Colors.white54),
+                SizedBox(width: 4),
+                Text(
+                  'Bookmark',
+                  style: TextStyle(fontSize: 12, color: Colors.white54),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
