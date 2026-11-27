@@ -4,13 +4,29 @@ A Flutter browser shell that will grow into a watch-together app.
 
 ![Watch Together browser shell](docs/home.jpeg)
 
-## Milestone 1 — the browser
+## Milestones 1 & 2 — the browser
 
 - Back / forward / home / reload controls
 - Address bar that accepts a URL, a bare domain, or a search query
 - Bookmark bar with default shortcuts, add-current-page, and long-press to remove (with undo)
 - Custom dark start page
 - WebView powered by `flutter_inappwebview`
+- **Ad blocker, on by default** — see below
+
+### Ad blocker
+
+The shield chip at the start of the bookmark bar shows `Ads: blocked` by
+default. Tap it to switch to `Ads: allowed`. It works in three ways:
+
+1. Network requests to known ad/tracker hosts are dropped.
+2. Navigation to those hosts (including popup links) is cancelled.
+3. An injected style sheet hides ad-like elements, and `window.open` popups
+   are neutralised.
+
+The small number on the chip counts how many requests/popups were blocked in
+the current session. This is a lightweight, conservative blocker rather than a
+full EasyList-style filter engine. It resets to **on** each time the app
+starts.
 
 ## Run it
 
@@ -29,7 +45,7 @@ flutter test
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.0.1 release](https://github.com/liton021/watch-together/releases/tag/v0.0.1).
+[v0.0.2 release](https://github.com/liton021/watch-together/releases/tag/v0.0.2).
 
 ## Build APKs
 

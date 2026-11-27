@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -7,6 +9,94 @@ const Color _panel = Color(0xFF12161F);
 const Color _field = Color(0xFF1B2130);
 const Color _line = Color(0xFF252C3B);
 const Color _accent = Color(0xFF8B9DFF);
+
+/// Known ad / tracking hosts. Requests to these are dropped while the
+/// blocker is on. This is deliberately a small, conservative list.
+const List<String> _adHosts = <String>[
+  'doubleclick.net',
+  'googlesyndication.com',
+  'googleadservices.com',
+  'adservice.google',
+  'admob.com',
+  'adnxs.com',
+  'amazon-adsystem.com',
+  'adform.net',
+  'criteo.com',
+  'taboola.com',
+  'outbrain.com',
+  'pubmatic.com',
+  'rubiconproject.com',
+  'openx.net',
+  'adcolony.com',
+  'chartbeat.net',
+  'scorecardresearch.com',
+  'quantserve.com',
+  'connect.facebook.net',
+  'smartadserver.com',
+  'yieldmo.com',
+  'sovrn.com',
+  'ads-twitter.com',
+  'doubleverify.net',
+];
+
+/// Injected at document start: hides ad-like elements and blocks popups.
+/// Flutter syncs the on/off state by calling `window.__wtApplyAds()`.
+const String _adBlockerScript = r'''
+(function () {
+  window.__wtAdsEnabled = true;
+  window.__wtOriginalOpen = window.open;
+
+  window.__wtApplyAds = function () {
+    var on = window.__wtAdsEnabled !== false;
+    var style = document.getElementById('__wt_adblocker_style');
+    if (style) {
+      style.disabled = !on;
+    }
+    window.open = on
+      ? function () { return null; }
+      : window.__wtOriginalOpen;
+  };
+
+  var style = document.createElement('style');
+  style.id = '__wt_adblocker_style';
+  style.textContent = [
+    'ins.adsbygoogle,',
+    'iframe[src*="doubleclick" i],',
+    'iframe[src*="googlesyndication" i],',
+    'iframe[src*="adservice.google" i],',
+    '[class~="advertisement"],',
+    '[class~="advert"],',
+    '[class~="ad"],',
+    '[id="ad"],',
+    '[id^="ad-"],',
+    '[id^="ads-"],',
+    '[class*="ad-banner" i],',
+    '[id*="ad-banner" i],',
+    '[class*="ad-container" i],',
+    '[id*="ad-container" i],',
+    '[class*="advert" i],',
+    '[id*="advert" i],',
+    '[class*="sponsor" i],',
+    '[id*="sponsor" i],',
+    '[data-ad-slot],',
+    '[data-ad-client],',
+    '[aria-label*="advertisement" i]',
+    '{ display: none !important; }'
+  ].join('\n');
+
+  (document.head || document.documentElement).appendChild(style);
+  window.__wtApplyAds();
+})();
+''';
+
+bool isAdUri(WebUri? uri) {
+  if (uri == null) return false;
+  final host = uri.host.toLowerCase();
+  for (final adHost in _adHosts) {
+    if (host.contains(adHost)) return true;
+  }
+  return false;
+}
 
 const String _homePageHtml = r'''
 <!DOCTYPE html>
@@ -67,7 +157,7 @@ const String _homePageHtml = r'''
       <a href="https://www.google.com">Google</a>
       <a href="https://www.netflix.com">Netflix</a>
     </div>
-    <div class="tip">Milestone 1 — the browser shell.</div>
+    <div class="tip">Ad blocker is on by default — tap the shield in the bar to toggle it.</div>
   </div>
 </body>
 </html>
@@ -160,6 +250,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
   bool _canGoBack = false;
   bool _canGoForward = false;
   String _currentUrl = '';
+  bool _adBlockerEnabled = true;
+  int _blockedCount = 0;
 
   final List<_Bookmark> _bookmarks = <_Bookmark>[
     const _Bookmark('YouTube', 'https://www.youtube.com'),
@@ -371,6 +463,56 @@ class _BrowserScreenState extends State<BrowserScreen> {
       );
   }
 
+  /// Pushes the current on/off state into the already-loaded page.
+  Future<void> _syncAdBlockerToPage() async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(
+        source:
+            'if (window.__wtApplyAds) { '
+            'window.__wtAdsEnabled = $_adBlockerEnabled; '
+            'window.__wtApplyAds(); }',
+      );
+    } catch (_) {
+      // Cross-origin iframes on the web preview cannot be scripted.
+    }
+  }
+
+  Future<void> _toggleAdBlocker() async {
+    setState(() => _adBlockerEnabled = !_adBlockerEnabled);
+    _showMessage(_adBlockerEnabled ? 'Ad blocker on.' : 'Ad blocker off.');
+    await _syncAdBlockerToPage();
+  }
+
+  /// Drops requests to known ad hosts. Returning null lets them through.
+  Future<WebResourceResponse?> _handleAdRequest(
+    InAppWebViewController controller,
+    WebResourceRequest request,
+  ) async {
+    if (_adBlockerEnabled && isAdUri(request.url)) {
+      _blockedCount++;
+      return WebResourceResponse(
+        contentType: 'text/plain',
+        contentEncoding: 'utf-8',
+        data: Uint8List(0),
+      );
+    }
+    return null;
+  }
+
+  /// Blocks direct navigation (including popup links) to ad hosts.
+  Future<NavigationActionPolicy?> _handleAdNavigation(
+    InAppWebViewController controller,
+    NavigationAction action,
+  ) async {
+    if (_adBlockerEnabled && isAdUri(action.request.url)) {
+      _blockedCount++;
+      return NavigationActionPolicy.CANCEL;
+    }
+    return null;
+  }
+
   static String _shorten(String text, [int max = 24]) {
     if (text.runes.length <= max) return text;
     return '${String.fromCharCodes(text.runes.take(max))}…';
@@ -494,6 +636,75 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
+  Widget _buildAdBlockChip() {
+    final on = _adBlockerEnabled;
+    return Tooltip(
+      message: on
+          ? 'Ad blocker on — $_blockedCount blocked — tap to turn off'
+          : 'Ad blocker off — tap to turn on',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: _toggleAdBlocker,
+          borderRadius: BorderRadius.circular(9),
+          child: Container(
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: on
+                  ? _accent.withValues(alpha: 0.14)
+                  : Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(
+                color: on ? _accent.withValues(alpha: 0.45) : Colors.white12,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.shield_rounded,
+                  size: 15,
+                  color: on ? _accent : Colors.white54,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  on ? 'Ads: blocked' : 'Ads: allowed',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: on ? _accent : Colors.white54,
+                  ),
+                ),
+                if (_blockedCount > 0) ...[
+                  const SizedBox(width: 5),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 5,
+                      vertical: 1,
+                    ),
+                    decoration: BoxDecoration(
+                      color: on
+                          ? _accent.withValues(alpha: 0.22)
+                          : Colors.white12,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '$_blockedCount',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: on ? _accent : Colors.white70,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildBookmarkBar() {
     return SizedBox(
       height: 42,
@@ -501,6 +712,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
         children: [
+          _buildAdBlockChip(),
+          const SizedBox(width: 8),
           for (final bookmark in _bookmarks) ...[
             _BookmarkChip(
               bookmark: bookmark,
@@ -545,8 +758,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
               Expanded(
                 child: InAppWebView(
                   initialData: InAppWebViewInitialData(data: _homePageHtml),
+                  initialUserScripts:
+                      UnmodifiableListView<UserScript>(<UserScript>[
+                        UserScript(
+                          source: _adBlockerScript,
+                          injectionTime:
+                              UserScriptInjectionTime.AT_DOCUMENT_START,
+                        ),
+                      ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
+                    supportMultipleWindows: false,
                     mediaPlaybackRequiresUserGesture: false,
                     allowsInlineMediaPlayback: true,
                     supportZoom: true,
@@ -572,6 +794,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       _progress = 100;
                     });
                     _syncNavigationState();
+                    _syncAdBlockerToPage();
                   },
                   onProgressChanged: (controller, progress) {
                     if (!mounted) return;
@@ -587,6 +810,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       _showMessage('Could not load this page.');
                     }
                   },
+                  shouldInterceptRequest: _handleAdRequest,
+                  shouldOverrideUrlLoading: _handleAdNavigation,
                   onUpdateVisitedHistory: (controller, url, isReload) {
                     _syncNavigationState();
                   },

@@ -1,3 +1,4 @@
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:watch_together/main.dart';
 
@@ -45,6 +46,21 @@ void main() {
         normalizeUrl('file:///C:/movies/demo.mp4'),
         'file:///C:/movies/demo.mp4',
       );
+    });
+  });
+
+  group('isAdUri', () {
+    test('matches ad and tracker hosts, including subdomains', () {
+      expect(
+        isAdUri(WebUri('https://googleads.g.doubleclick.net/ads')),
+        isTrue,
+      );
+      expect(
+        isAdUri(WebUri('https://pagead2.googlesyndication.com/ad.js')),
+        isTrue,
+      );
+      expect(isAdUri(WebUri('https://www.youtube.com')), isFalse);
+      expect(isAdUri(null), isFalse);
     });
   });
 }
