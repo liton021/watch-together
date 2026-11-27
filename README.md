@@ -26,6 +26,11 @@ flutter analyze
 flutter test
 ```
 
+## Downloads
+
+Ready-made, split APKs are available in the
+[v0.0.1 release](https://github.com/liton021/watch-together/releases/tag/v0.0.1).
+
 ## Build APKs
 
 ```powershell
