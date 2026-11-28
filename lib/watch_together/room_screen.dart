@@ -100,6 +100,7 @@ class _RoomScreenState extends State<RoomScreen> {
   String? _floatingEmoji;
 
   InAppWebViewController? _playerController;
+  DateTime? _playerSettledAt;
   String? _sharedKind;
   String? _sharedUrl;
   String? _syncEvent;
@@ -167,6 +168,7 @@ class _RoomScreenState extends State<RoomScreen> {
         setState(() {
           _sharedKind = kind;
           _sharedUrl = url;
+          _playerSettledAt = null;
           _syncEvent = payload['event']?.toString() ?? 'play';
           _syncPosition = (payload['position'] as num?)?.toDouble();
         });
@@ -372,20 +374,25 @@ class _RoomScreenState extends State<RoomScreen> {
                                 url: WebUri(_playerUrl(_sharedUrl!)),
                               ),
                               initialUserScripts:
-                                  UnmodifiableListView<UserScript>(
-                                    _sharedKind == 'video'
-                                        ? <UserScript>[
-                                            UserScript(
-                                              source: _focusVideoScript,
-                                              injectionTime:
-                                                  UserScriptInjectionTime
-                                                      .AT_DOCUMENT_START,
-                                            ),
-                                          ]
-                                        : <UserScript>[],
-                                  ),
+                                  UnmodifiableListView<UserScript>(<UserScript>[
+                                    UserScript(
+                                      source: adBlockerScript(viewer: true),
+                                      injectionTime: UserScriptInjectionTime
+                                          .AT_DOCUMENT_START,
+                                    ),
+                                    if (_sharedKind == 'video')
+                                      UserScript(
+                                        source: _focusVideoScript,
+                                        injectionTime: UserScriptInjectionTime
+                                            .AT_DOCUMENT_START,
+                                      ),
+                                  ]),
                               initialSettings: InAppWebViewSettings(
                                 javaScriptEnabled: true,
+                                javaScriptCanOpenWindowsAutomatically: false,
+                                supportMultipleWindows: false,
+                                useShouldInterceptRequest: true,
+                                useShouldOverrideUrlLoading: true,
                                 mediaPlaybackRequiresUserGesture: false,
                                 allowsInlineMediaPlayback: true,
                                 supportZoom: false,
@@ -393,6 +400,14 @@ class _RoomScreenState extends State<RoomScreen> {
                                     'autoplay; encrypted-media; fullscreen; picture-in-picture',
                                 iframeAllowFullscreen: true,
                               ),
+                              shouldInterceptRequest: blockAdResource,
+                              shouldOverrideUrlLoading: (controller, action) {
+                                return viewerNavigationPolicy(
+                                  controller,
+                                  action,
+                                  settledAt: _playerSettledAt,
+                                );
+                              },
                               onWebViewCreated: (controller) {
                                 _playerController = controller;
                               },
@@ -409,6 +424,7 @@ class _RoomScreenState extends State<RoomScreen> {
                                 return JsAlertResponse(handledByClient: true);
                               },
                               onLoadStop: (controller, url) {
+                                _playerSettledAt = DateTime.now();
                                 final event = _syncEvent;
                                 if (event != null) {
                                   _applySync(event, _syncPosition);

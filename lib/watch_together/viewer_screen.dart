@@ -4,6 +4,7 @@ import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import '../ad_blocker.dart';
 import 'room_service.dart';
 
 const Color _background = Color(0xFF0B0E14);
@@ -97,6 +98,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
   static const List<String> _reactions = <String>['❤️', '😂', '👏', '🔥', '😮'];
 
   InAppWebViewController? _controller;
+  DateTime? _settledAt;
   final TextEditingController _chatController = TextEditingController();
 
   String? _videoUrl;
@@ -161,7 +163,10 @@ class _ViewerScreenState extends State<ViewerScreen> {
     if (url != null && url != _videoUrl) {
       _pendingAction = event;
       _pendingPosition = position;
-      setState(() => _videoUrl = url);
+      setState(() {
+        _videoUrl = url;
+        _settledAt = null;
+      });
       _load(url);
     } else {
       _applySync(event, position);
@@ -260,6 +265,11 @@ class _ViewerScreenState extends State<ViewerScreen> {
                     initialUserScripts:
                         UnmodifiableListView<UserScript>(<UserScript>[
                           UserScript(
+                            source: adBlockerScript(viewer: true),
+                            injectionTime:
+                                UserScriptInjectionTime.AT_DOCUMENT_START,
+                          ),
+                          UserScript(
                             source: _focusVideoScript,
                             injectionTime:
                                 UserScriptInjectionTime.AT_DOCUMENT_START,
@@ -267,6 +277,10 @@ class _ViewerScreenState extends State<ViewerScreen> {
                         ]),
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
+                      javaScriptCanOpenWindowsAutomatically: false,
+                      supportMultipleWindows: false,
+                      useShouldInterceptRequest: true,
+                      useShouldOverrideUrlLoading: true,
                       mediaPlaybackRequiresUserGesture: false,
                       allowsInlineMediaPlayback: true,
                       supportZoom: false,
@@ -274,6 +288,14 @@ class _ViewerScreenState extends State<ViewerScreen> {
                           'autoplay; encrypted-media; fullscreen; picture-in-picture',
                       iframeAllowFullscreen: true,
                     ),
+                    shouldInterceptRequest: blockAdResource,
+                    shouldOverrideUrlLoading: (controller, action) {
+                      return viewerNavigationPolicy(
+                        controller,
+                        action,
+                        settledAt: _settledAt,
+                      );
+                    },
                     onWebViewCreated: (controller) {
                       _controller = controller;
                       final url = _videoUrl;
@@ -281,6 +303,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                     },
                     onLoadStop: (controller, url) {
                       if (!mounted) return;
+                      _settledAt = DateTime.now();
                       setState(() => _loading = false);
                       final action = _pendingAction;
                       if (action != null) {

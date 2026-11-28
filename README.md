@@ -16,22 +16,30 @@ A Flutter browser shell that will grow into a watch-together app.
 ### Ad blocker & tap protection
 
 The shield chip at the start of the bookmark bar shows `Ads: blocked` by
-default. Tap it to switch to `Ads: allowed`. It works in five ways:
+default. Tap it to switch to `Ads: allowed`. It works in seven layers:
 
-1. Network requests to known ad, popunder and tracker hosts are dropped.
-2. Navigation to those hosts (including popup links) is cancelled.
-3. An injected style sheet hides ad-like elements.
-4. `window.open` is only followed when it points at the same site or at the
-   link the user just tapped; unrelated popups are counted and discarded.
-5. **Tap-hijack protection**: a click on a real link goes straight to that
-   link, so invisible overlays or click-tracking scripts cannot redirect a
-   movie poster to an unrelated site. Links that would normally open in a new
-   tab are loaded in the same page instead.
+1. **~9,800 blocked hosts** from the AdAway and pgl.yoyo.org public lists, plus
+   manually added popunder networks (PopAds, PopCash, PropellerAds, Adsterra,
+   ExoClick, MGID, ...). Subdomains are covered too.
+2. Network requests to those hosts are dropped before they reach the page.
+3. Navigation to them, including popup links and `intent://`/`market://`
+   app-store redirects, is cancelled.
+4. An injected style sheet and a DOM scan hide ad banners, full-screen
+   interstitials and ad iframes.
+5. `window.open` is only followed for the same site or for an obvious
+   player/server control tap. Other popups are counted and discarded.
+6. **Tap-hijack protection**: a click on a real link goes straight to that
+   link, so invisible overlays and click trackers never see it. A server-side
+   redirect to another host after a tap is also cancelled.
+7. Site `confirm()`/`alert()` gates and notification permission prompts are
+   silently accepted/denied so viewers never get stuck behind a dialog.
+
+If a legitimate external player is blocked, a **Redirect blocked** snackbar
+offers an **Open** action. Viewers in a room get the same blocker; their WebView
+stays on the shared page and never opens popups or external links.
 
 The small number on the chip counts how many requests/popups/redirects were
-blocked in the current session. This is a lightweight, conservative blocker
-rather than a full EasyList-style filter engine. It resets to **on** each time
-the app starts.
+blocked in the current session. It resets to **on** each time the app starts.
 
 ## Run it
 
@@ -86,7 +94,7 @@ Never put the `service_role` key in this file.
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.3.7 release](https://github.com/liton021/watch-together/releases/tag/v0.3.7).
+[v0.4.0 release](https://github.com/liton021/watch-together/releases/tag/v0.4.0).
 
 ## Build APKs
 
@@ -99,9 +107,9 @@ Outputs in `build/app/outputs/flutter-apk/`:
 
 | APK | Use |
 |---|---|
-| `app-arm64-v8a-release.apk` (17.8 MB) | Almost all modern phones |
-| `app-armeabi-v7a-release.apk` (15.4 MB) | Older 32-bit phones |
-| `app-x86_64-release.apk` (19.1 MB) | Emulators / Chromebooks |
+| `app-arm64-v8a-release.apk` (18.0 MB) | Almost all modern phones |
+| `app-armeabi-v7a-release.apk` (15.6 MB) | Older 32-bit phones |
+| `app-x86_64-release.apk` (19.3 MB) | Emulators / Chromebooks |
 
 All three support **Android 7.0+** (`minSdk 24`) and target Android 16
 (`targetSdk 36`). They are currently signed with the debug key for

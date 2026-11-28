@@ -5,305 +5,17 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import 'ad_blocker.dart';
 import 'home_screen.dart';
 import 'watch_together/room_service.dart';
+
+export 'ad_blocker.dart';
 
 const Color _background = Color(0xFF0B0E14);
 const Color _panel = Color(0xFF12161F);
 const Color _field = Color(0xFF1B2130);
 const Color _line = Color(0xFF252C3B);
 const Color _accent = Color(0xFF8B9DFF);
-
-/// Known ad / tracking hosts. Requests to these are dropped while the
-/// blocker is on. This is deliberately a small, conservative list.
-const List<String> _adHosts = <String>[
-  'doubleclick.net',
-  'googlesyndication.com',
-  'googleadservices.com',
-  'adservice.google',
-  'admob.com',
-  'adnxs.com',
-  'amazon-adsystem.com',
-  'adform.net',
-  'criteo.com',
-  'taboola.com',
-  'outbrain.com',
-  'pubmatic.com',
-  'rubiconproject.com',
-  'openx.net',
-  'adcolony.com',
-  'chartbeat.net',
-  'scorecardresearch.com',
-  'quantserve.com',
-  'connect.facebook.net',
-  'smartadserver.com',
-  'yieldmo.com',
-  'sovrn.com',
-  'ads-twitter.com',
-  'doubleverify.net',
-  // Popunder / redirect networks that movie sites commonly use.
-  'popads.net',
-  'popcash.net',
-  'propellerads.com',
-  'propellerclick.com',
-  'onclickads.net',
-  'onclickalgo.com',
-  'adsterra.com',
-  'exoclick.com',
-  'exosrv.com',
-  'juicyads.com',
-  'trafficjunky.net',
-  'hilltopads.net',
-  'clickadu.com',
-  'adcash.com',
-  'mgid.com',
-  'zedo.com',
-  'bidvertiser.com',
-  'revcontent.com',
-  'popmyads.com',
-  // Analytics and session recording endpoints that profile taps/clicks.
-  'google-analytics.com',
-  'analytics.google.com',
-  'googletagmanager.com',
-  'hotjar.com',
-  'clarity.ms',
-  'mixpanel.com',
-  'segment.io',
-  'amplitude.com',
-  'fullstory.com',
-  'mouseflow.com',
-  'smartlook.com',
-  'luckyorange.com',
-];
-
-/// Injected at document start: hides ad-like elements, keeps `target="_blank"`
-/// links inside this WebView, and routes `window.open` through Flutter.
-///
-/// Movie sites usually reach the player with a popup link. Android drops
-/// those when multiple windows are off, so `window.open` is sent to Flutter
-/// (`wtOpenUrl`) and loaded in the same page after the ad check. Flutter
-/// syncs the on/off state by calling `window.__wtApplyAds()`.
-const String _adBlockerScript = r'''
-(function () {
-  window.__wtAdsEnabled = true;
-  window.__wtOriginalOpen = window.open;
-
-  function absolute(url) {
-    try {
-      return new URL(String(url), location.href).href;
-    } catch (_) {
-      return String(url);
-    }
-  }
-
-  function hostOf(url) {
-    try {
-      return new URL(String(url), location.href).host;
-    } catch (_) {
-      return '';
-    }
-  }
-
-  // A popup may only stay in this app when it points at the same site or at
-  // the link the user just tapped. Everything else is an ad/popunder.
-  function mayOpen(host) {
-    if (!host) { return false; }
-    if (host === location.host) { return true; }
-    var tap = window.__wtLastTap;
-    if (!tap || Date.now() - tap.at > 3000) { return false; }
-    if (tap.host && tap.host === host) { return true; }
-    // A real button (play/server) may legitimately open an external player.
-    if (!tap.href && tap.control) { return true; }
-    return false;
-  }
-
-  function stubWindow() {
-    var stub = {
-      closed: false,
-      focus: function () {},
-      close: function () {},
-      document: { write: function () {}, close: function () {} }
-    };
-    Object.defineProperty(stub, 'location', {
-      get: function () { return location.href; },
-      set: function (value) { openHere(value && value.href ? value.href : value); }
-    });
-    return stub;
-  }
-
-  function openHere(url) {
-    if (!url) { return; }
-    var target = absolute(url);
-    if (!mayOpen(hostOf(target))) {
-      try {
-        window.flutter_inappwebview.callHandler('wtBlockedPopup', target);
-      } catch (_) {}
-      return;
-    }
-    try {
-      window.flutter_inappwebview.callHandler('wtOpenUrl', target);
-    } catch (_) {
-      try { location.href = target; } catch (__) {}
-    }
-  }
-
-  window.__wtOpenSamePage = function (url) {
-    if (url) { openHere(url); }
-    // Some sites keep using the returned window, so hand back a harmless
-    // stand-in instead of null.
-    return stubWindow();
-  };
-
-  function keepInThisTab(el) {
-    if (!el || !el.getAttribute) { return; }
-    var target = el.getAttribute('target');
-    if (target === '_blank' || target === '_new') {
-      el.setAttribute('target', '_self');
-    }
-  }
-
-  function fixTargets() {
-    var nodes = document.querySelectorAll(
-      'a[target="_blank"], a[target="_new"], form[target="_blank"]'
-    );
-    for (var i = 0; i < nodes.length; i++) {
-      nodes[i].setAttribute('target', '_self');
-    }
-  }
-
-  function closestAnchor(el) {
-    while (el && el !== document) {
-      if (el.tagName === 'A' && el.getAttribute) { return el; }
-      el = el.parentElement;
-    }
-    return null;
-  }
-
-  function hrefOf(a) {
-    if (!a || !a.getAttribute) { return ''; }
-    if (a.hasAttribute('download')) { return ''; }
-    var raw = a.getAttribute('href') || '';
-    if (!raw || raw.charAt(0) === '#') { return ''; }
-    if (/^(javascript|mailto|tel|blob|data):/i.test(raw)) { return ''; }
-    try {
-      var url = new URL(raw, location.href);
-      return /^https?:$/i.test(url.protocol) ? url.href : '';
-    } catch (_) {
-      return '';
-    }
-  }
-
-  function isControl(el) {
-    while (el && el !== document) {
-      var tag = (el.tagName || '').toUpperCase();
-      if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' ||
-          tag === 'TEXTAREA' || tag === 'VIDEO' || tag === 'AUDIO') {
-        return true;
-      }
-      var role = el.getAttribute ? el.getAttribute('role') : null;
-      if (role === 'button' || role === 'tab' || role === 'switch') {
-        return true;
-      }
-      el = el.parentElement;
-    }
-    return false;
-  }
-
-  // Records the link the user is aiming at. If a transparent ad overlay sits
-  // on top of a poster, look through it for the real <a> underneath.
-  function recordTap(event) {
-    if (event.button !== undefined && event.button !== 0) { return ''; }
-    // An anchor without a usable href is still an intentional link tap.
-    var control = isControl(event.target) || !!closestAnchor(event.target);
-    var a = closestAnchor(event.target);
-    if (!a && !control && event.clientX != null &&
-        document.elementsFromPoint) {
-      var stack = document.elementsFromPoint(event.clientX, event.clientY) || [];
-      for (var i = 0; i < stack.length; i++) {
-        a = closestAnchor(stack[i]);
-        if (a) { break; }
-      }
-    }
-    var href = hrefOf(a);
-    window.__wtLastTap = {
-      href: href,
-      host: href ? hostOf(href) : '',
-      control: control,
-      at: Date.now()
-    };
-    return href;
-  }
-
-  window.__wtApplyAds = function () {
-    var on = window.__wtAdsEnabled !== false;
-    var style = document.getElementById('__wt_adblocker_style');
-    if (style) {
-      style.disabled = !on;
-    }
-    window.open = on ? window.__wtOpenSamePage : window.__wtOriginalOpen;
-  };
-
-  var style = document.createElement('style');
-  style.id = '__wt_adblocker_style';
-  style.textContent = [
-    'ins.adsbygoogle,',
-    'iframe[src*="doubleclick" i],',
-    'iframe[src*="googlesyndication" i],',
-    'iframe[src*="adservice.google" i],',
-    '[class~="advertisement"],',
-    '[class~="advert"],',
-    '[class~="ad"],',
-    '[id="ad"],',
-    '[id^="ad-"],',
-    '[id^="ads-"],',
-    '[class*="ad-banner" i],',
-    '[id*="ad-banner" i],',
-    '[class*="ad-container" i],',
-    '[id*="ad-container" i],',
-    '[class*="advert" i],',
-    '[id*="advert" i],',
-    '[class*="sponsor" i],',
-    '[id*="sponsor" i],',
-    '[data-ad-slot],',
-    '[data-ad-client],',
-    '[aria-label*="advertisement" i]',
-    '{ display: none !important; }'
-  ].join('\n');
-
-  (document.head || document.documentElement).appendChild(style);
-  window.__wtApplyAds();
-  fixTargets();
-  setInterval(fixTargets, 1500);
-
-  window.addEventListener('pointerdown', function (event) {
-    if (window.__wtAdsEnabled === false) { return; }
-    recordTap(event);
-  }, true);
-
-  window.addEventListener('click', function (event) {
-    if (window.__wtAdsEnabled === false) { return; }
-    if (event.button !== 0 || event.metaKey || event.ctrlKey ||
-        event.shiftKey || event.altKey) {
-      return;
-    }
-    var href = recordTap(event);
-    if (!href) { return; }
-    // A real link was clicked. Follow it directly and stop the site's tap
-    // tracking listeners from redirecting the click to an ad.
-    event.stopImmediatePropagation();
-    event.preventDefault();
-    try { location.assign(href); } catch (_) {}
-  }, true);
-
-  document.addEventListener('click', function (event) {
-    var el = event.target;
-    while (el && el !== document) {
-      keepInThisTab(el);
-      el = el.parentElement;
-    }
-  }, true);
-})();
-''';
 
 /// Watches the host's <video> element so play/pause/seek can be broadcast.
 const String _videoHookScript = r'''
@@ -333,15 +45,6 @@ const String _videoHookScript = r'''
   }, 500);
 })();
 ''';
-
-bool isAdUri(WebUri? uri) {
-  if (uri == null) return false;
-  final host = uri.host.toLowerCase();
-  for (final adHost in _adHosts) {
-    if (host.contains(adHost)) return true;
-  }
-  return false;
-}
 
 const String _homePageHtml = r'''
 <!DOCTYPE html>
@@ -503,6 +206,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   String _currentUrl = '';
   bool _adBlockerEnabled = true;
   int _blockedCount = 0;
+  DateTime? _lastBlockedPrompt;
   String? _pendingUrl;
 
   final List<_Bookmark> _bookmarks = <_Bookmark>[
@@ -798,8 +502,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
       return;
     }
 
-    if (_adBlockerEnabled && isAdUri(uri)) {
-      if (mounted) setState(() => _blockedCount++);
+    if (_adBlockerEnabled && isBlockedNavigationUri(uri)) {
+      _countBlocked();
       return;
     }
 
@@ -861,7 +565,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
-  /// Drops requests to known ad hosts. Returning null lets them through.
+  /// Drops requests to ad hosts. Returning null lets them through.
   Future<WebResourceResponse?> _handleAdRequest(
     InAppWebViewController controller,
     WebResourceRequest request,
@@ -870,11 +574,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     if (request.isForMainFrame ?? false) return null;
     if (_adBlockerEnabled && isAdUri(request.url)) {
       _blockedCount++;
-      return WebResourceResponse(
-        contentType: 'text/plain',
-        contentEncoding: 'utf-8',
-        data: Uint8List(0),
-      );
+      return blockedAdResponse();
     }
     return null;
   }
@@ -911,8 +611,51 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
-  /// Blocks known ad hosts and tap-hijack redirects: a click on a poster may
-  /// only go to that poster's own link or stay on the current site.
+  /// Keeps the tapped link alive so a server-side redirect to an ad host can
+  /// still be recognised after the first hop.
+  Future<void> _markTapFollowed() async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(
+        source:
+            'if (window.__wtLastTap) { window.__wtLastTap.followed = true; }',
+      );
+    } catch (_) {
+      // The page may already be navigating away.
+    }
+  }
+
+  /// Offers an escape hatch when a suspicious redirect was cancelled, so a
+  /// legitimate external player is never unreachable.
+  void _offerBlockedLink(String url) {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final last = _lastBlockedPrompt;
+    if (last != null && now.difference(last) < const Duration(seconds: 8)) {
+      return;
+    }
+    _lastBlockedPrompt = now;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Redirect blocked: ${_shorten(url, 44)}'),
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(
+            label: 'Open',
+            onPressed: () => _openPageFromScript(url),
+          ),
+        ),
+      );
+  }
+
+  void _countBlocked() {
+    if (mounted) setState(() => _blockedCount++);
+  }
+
+  /// Blocks ad hosts, popunder redirects and tap hijacks. A click may only
+  /// reach its own link, or an external player opened by a player control.
   Future<NavigationActionPolicy?> _handleAdNavigation(
     InAppWebViewController controller,
     NavigationAction action,
@@ -920,8 +663,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final uri = action.request.url;
     if (uri == null) return NavigationActionPolicy.ALLOW;
 
-    if (_adBlockerEnabled && isAdUri(uri)) {
-      if (mounted) setState(() => _blockedCount++);
+    if (_adBlockerEnabled && isBlockedNavigationUri(uri)) {
+      _countBlocked();
       return NavigationActionPolicy.CANCEL;
     }
 
@@ -935,45 +678,52 @@ class _BrowserScreenState extends State<BrowserScreen> {
     } catch (_) {
       currentHost = '';
     }
-    if (currentHost.isEmpty || uri.host == currentHost) {
-      // A normal in-site link. Consume the tap so a later redirect is not
-      // mistaken for a hijacked click.
-      _clearTap();
-      return NavigationActionPolicy.ALLOW;
-    }
 
     final tap = await _recentTap();
-    if (tap == null) return NavigationActionPolicy.ALLOW;
+    final tapHref = tap?['href']?.toString() ?? '';
+    final tapPlayer = tap?['player'] == true;
 
-    _clearTap();
-
-    final tapHref = tap['href']?.toString() ?? '';
-    final tapHost = tap['host']?.toString() ?? '';
-    final tapControl = tap['control'] == true;
-    if (tapHref.isEmpty) {
-      if (tapControl) {
-        // A real button (for example a player or server button). Let the
-        // site navigate; blocking here would break external players.
-        return NavigationActionPolicy.ALLOW;
-      }
-      // A touch on plain page content tried to leave the site: hijack.
-      if (mounted) setState(() => _blockedCount++);
-      return NavigationActionPolicy.CANCEL;
+    // The link the user actually tapped. Keep the tap marked so a following
+    // server-side redirect to an ad host is still caught.
+    if (uri.toString() == tapHref) {
+      await _markTapFollowed();
+      return NavigationActionPolicy.ALLOW;
     }
-    if (tapHost.isNotEmpty && tapHost == uri.host) {
-      // This is exactly the link the user clicked.
+    if (currentHost.isEmpty || uri.host == currentHost) {
       return NavigationActionPolicy.ALLOW;
     }
 
-    // The click tried to leave the site for an unrelated host.
-    if (mounted) setState(() => _blockedCount++);
-    if (tapHref.isNotEmpty && tapHref != uri.toString()) {
-      final target = tapHref;
-      Future<void>.delayed(
-        const Duration(milliseconds: 150),
-        () => _openPageFromScript(target),
-      );
+    if (tap == null) {
+      // Passive redirect with no user tap. Known ad hosts were handled above;
+      // keep the app usable for legitimate first loads and player redirects.
+      return NavigationActionPolicy.ALLOW;
     }
+
+    // We already followed this tap. A cross-host move now is a redirect.
+    if (tap['followed'] == true) {
+      _countBlocked();
+      await _clearTap();
+      return NavigationActionPolicy.CANCEL;
+    }
+
+    if (tapHref.isEmpty) {
+      if (tapPlayer) {
+        // A real player/server control may open an external player.
+        await _clearTap();
+        return NavigationActionPolicy.ALLOW;
+      }
+      _countBlocked();
+      await _clearTap();
+      if (tap['control'] == true) {
+        _offerBlockedLink(uri.toString());
+      }
+      return NavigationActionPolicy.CANCEL;
+    }
+
+    // A link was tapped, but the site tried to leave for another host.
+    _countBlocked();
+    await _clearTap();
+    _offerBlockedLink(uri.toString());
     return NavigationActionPolicy.CANCEL;
   }
 
@@ -1285,7 +1035,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     UserScript
                   >[
                     UserScript(
-                      source: _adBlockerScript,
+                      source: adBlockerScript(),
                       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
                     UserScript(
@@ -1295,7 +1045,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
+                    javaScriptCanOpenWindowsAutomatically: false,
                     supportMultipleWindows: false,
+                    useShouldInterceptRequest: true,
+                    useShouldOverrideUrlLoading: true,
                     mediaPlaybackRequiresUserGesture: false,
                     allowsInlineMediaPlayback: true,
                     supportZoom: true,
@@ -1347,7 +1100,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       controller.addJavaScriptHandler(
                         handlerName: 'wtBlockedPopup',
                         callback: (arguments) {
-                          if (mounted) setState(() => _blockedCount++);
+                          _countBlocked();
+                          final data = arguments.isNotEmpty
+                              ? arguments.first
+                              : null;
+                          if (data is Map && data['player'] == true) {
+                            final url = data['url']?.toString() ?? '';
+                            if (url.isNotEmpty) _offerBlockedLink(url);
+                          }
                           return null;
                         },
                       );
@@ -1379,10 +1139,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     _syncAdBlockerToPage();
                     _injectVideoScripts();
                   },
-                  // A confirm() means the site is asking permission, so the
-                  // next navigation is intentional rather than a hijacked tap.
+                  // The injected script accepts confirm() itself; this is a
+                  // fallback for pages that replace it afterwards.
                   onJsConfirm: (controller, request) async {
-                    _clearTap();
                     return JsConfirmResponse(handledByClient: false);
                   },
                   onProgressChanged: (controller, progress) {
