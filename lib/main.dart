@@ -1,5 +1,4 @@
 import 'dart:collection';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -90,48 +89,6 @@ const String _adBlockerScript = r'''
 
   (document.head || document.documentElement).appendChild(style);
   window.__wtApplyAds();
-})();
-''';
-
-/// Finds the frame that is actually showing a video right now: either a
-/// <video> element or an embedded player iframe (YouTube/Vimeo/etc.).
-const String _videoFinderScript = r'''
-(function () {
-  window.__wtFindVideoFrame = function () {
-    var candidates = [];
-    document.querySelectorAll('video').forEach(function (v, i) {
-      var r = v.getBoundingClientRect();
-      if (r.width > 10 && r.height > 10) {
-        candidates.push({
-          type: 'video',
-          index: i,
-          area: r.width * r.height,
-          playing: (!v.paused && v.currentTime > 0) ? 1 : 0,
-          position: v.currentTime || 0,
-          url: location.href
-        });
-      }
-    });
-    document.querySelectorAll('iframe').forEach(function (f, i) {
-      var r = f.getBoundingClientRect();
-      var src = f.src || '';
-      if (r.width > 10 && r.height > 10 &&
-          /(youtube|youtu\.be|vimeo|dailymotion|twitch|player|embed|video)/i.test(src)) {
-        candidates.push({
-          type: 'iframe',
-          index: i,
-          area: r.width * r.height,
-          playing: 1,
-          position: 0,
-          url: src
-        });
-      }
-    });
-    candidates.sort(function (a, b) {
-      return (b.playing - a.playing) || (b.area - a.area);
-    });
-    return candidates.length ? candidates[0] : null;
-  };
 })();
 ''';
 
@@ -557,7 +514,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+        SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
       );
   }
 
@@ -599,7 +556,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final controller = _controller;
     if (controller == null) return;
     try {
-      await controller.evaluateJavascript(source: _videoFinderScript);
       await controller.evaluateJavascript(source: _videoHookScript);
     } catch (_) {
       // Cross-origin pages cannot be scripted from the web preview.
@@ -623,9 +579,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _showMessage('Sent to room ${RoomService.instance.code}.');
   }
 
-  /// The top-right button is a trigger: find the player frame on screen and
-  /// mirror it into every member's 16:9 room screen. If detection fails, the
-  /// current page is sent instead and the viewer hides its non-video UI.
+  /// The top-right button is a trigger: send the current page itself to the
+  /// room. Every viewer keeps only the player part of that page and hides the
+  /// rest with injected CSS/JS.
   Future<void> _shareVideoFrame() async {
     if (!_isHosting) {
       _showMessage('Create or join a room first.');
@@ -638,50 +594,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
 
     try {
-      // Make sure the finder exists even if page-load callbacks were skipped.
-      await controller.evaluateJavascript(source: _videoFinderScript);
-      final raw = await controller.evaluateJavascript(
-        source:
-            '(function(){try{var f=window.__wtFindVideoFrame();'
-            'return f?JSON.stringify(f):"";}catch(e){return "";}})()',
-      );
+      final actualUri = await controller.getUrl();
+      final actual = actualUri?.toString() ?? '';
+      final pageUrl = _isWebUrl(actual) ? actual : _currentUrl;
 
-      final text = raw?.toString() ?? '';
-      Map<String, dynamic>? frame;
-      if (text.isNotEmpty && text != 'null') {
-        try {
-          Object? decoded = jsonDecode(text);
-          if (decoded is String) decoded = jsonDecode(decoded);
-          if (decoded is Map<String, dynamic>) frame = decoded;
-        } catch (_) {}
-      }
-
-      if (frame != null) {
-        final kind = frame['type']?.toString() ?? 'iframe';
-        final url =
-            (kind == 'iframe' ? frame['url']?.toString() : _currentUrl) ?? '';
-        if (url.isNotEmpty) {
-          await _sendFrameToRoom(
-            kind: kind,
-            url: url,
-            index: (frame['index'] as num?)?.toInt() ?? 0,
-            position: (frame['position'] as num?)?.toDouble() ?? 0,
-          );
-          return;
-        }
-      }
-
-      // Fallback: mirror the page itself. The viewer's injected CSS/JS hides
-      // everything except the video, so YouTube-style pages still work.
-      final page = _currentUrl;
-      if (page.isEmpty || !_isWebUrl(page)) {
+      if (pageUrl.isEmpty || !_isWebUrl(pageUrl)) {
         _showMessage('Open a website first, then press the cast button.');
         return;
       }
-      await _sendFrameToRoom(kind: 'video', url: page);
-      _showMessage('No player detected — sent the current page instead.');
+
+      await _sendFrameToRoom(kind: 'video', url: pageUrl);
     } catch (error) {
-      _showMessage('Could not share this video: $error');
+      _showMessage('Could not share this page: $error');
     }
   }
 
@@ -1029,10 +953,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     ),
                     UserScript(
                       source: _videoHookScript,
-                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                    ),
-                    UserScript(
-                      source: _videoFinderScript,
                       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
                   ]),

@@ -14,51 +14,70 @@ const Color _roomPanel = Color(0xFF12161F);
 const Color _roomLine = Color(0xFF252C3B);
 const Color _roomAccent = Color(0xFF8B9DFF);
 
-/// Hides everything on the host's page except the playing <video>.
+/// Keeps only the player portion of the host's page: a visible <video> or,
+/// when the player lives in another frame, that <iframe> element. Everything
+/// else is hidden and the player is expanded to fill the 16:9 screen.
 const String _focusVideoScript = r'''
 (function () {
-  function focusVideo() {
-    var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
-    if (!videos.length) { return; }
-    var v = videos[0];
-    var best = -1;
-    videos.forEach(function (candidate) {
-      var r = candidate.getBoundingClientRect();
+  function bestVideo() {
+    var v = null, best = -1;
+    Array.prototype.slice.call(document.querySelectorAll('video')).forEach(function (c) {
+      var r = c.getBoundingClientRect();
+      if (r.width < 10 || r.height < 10) { return; }
       var score = r.width * r.height +
-        ((!candidate.paused && candidate.currentTime > 0) ? 1000000 : 0);
-      if (score > best) { best = score; v = candidate; }
+        ((!c.paused && c.currentTime > 0) ? 1000000 : 0);
+      if (score > best) { best = score; v = c; }
     });
+    return v;
+  }
+
+  function bestIframe() {
+    var f = null, best = -1;
+    Array.prototype.slice.call(document.querySelectorAll('iframe')).forEach(function (c) {
+      var r = c.getBoundingClientRect();
+      if (r.width < 10 || r.height < 10) { return; }
+      if (!/^https?:\/\//i.test(c.src || '')) { return; }
+      if (r.width * r.height > best) { best = r.width * r.height; f = c; }
+    });
+    return f;
+  }
+
+  function focusPlayer() {
+    var target = bestVideo() || bestIframe();
+    if (!target) { return; }
     document.querySelectorAll('body *').forEach(function (el) {
-      if (el === v || v.contains(el) || el.contains(v)) {
-        if (el !== v) { el.style.setProperty('overflow', 'visible', 'important'); }
+      if (el === target || target.contains(el) || el.contains(target)) {
+        if (el !== target) {
+          el.style.setProperty('overflow', 'visible', 'important');
+        }
         return;
       }
       el.style.setProperty('display', 'none', 'important');
     });
-    v.style.setProperty('position', 'fixed', 'important');
-    v.style.setProperty('left', '0', 'important');
-    v.style.setProperty('top', '0', 'important');
-    v.style.setProperty('width', '100vw', 'important');
-    v.style.setProperty('height', '100vh', 'important');
-    v.style.setProperty('object-fit', 'contain', 'important');
-    v.style.setProperty('background', '#000', 'important');
-    v.style.setProperty('z-index', '2147483647', 'important');
+    target.style.setProperty('position', 'fixed', 'important');
+    target.style.setProperty('left', '0', 'important');
+    target.style.setProperty('top', '0', 'important');
+    target.style.setProperty('width', '100vw', 'important');
+    target.style.setProperty('height', '100vh', 'important');
+    target.style.setProperty('background', '#000', 'important');
+    target.style.setProperty('z-index', '2147483647', 'important');
+    if (target.tagName === 'VIDEO') {
+      target.style.setProperty('object-fit', 'contain', 'important');
+    }
   }
+
   window.__wtSync = function (event, position) {
-    var v = null, best = -1;
-    Array.prototype.slice.call(document.querySelectorAll('video')).forEach(function (c) {
-      var r = c.getBoundingClientRect();
-      if (r.width * r.height > best) { best = r.width * r.height; v = c; }
-    });
+    var v = bestVideo();
     if (!v) { setTimeout(function () { window.__wtSync(event, position); }, 400); return; }
-    focusVideo();
+    focusPlayer();
     if (event === 'pause') { v.pause(); }
     else { v.play().catch(function () {}); }
     if (typeof position === 'number' && Math.abs(v.currentTime - position) > 1.5) {
       try { v.currentTime = position; } catch (_) {}
     }
   };
-  setInterval(focusVideo, 1200);
+
+  setInterval(focusPlayer, 1200);
 })();
 ''';
 
