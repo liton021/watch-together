@@ -213,7 +213,8 @@ const String _adBlockerScript = r'''
   // on top of a poster, look through it for the real <a> underneath.
   function recordTap(event) {
     if (event.button !== undefined && event.button !== 0) { return ''; }
-    var control = isControl(event.target);
+    // An anchor without a usable href is still an intentional link tap.
+    var control = isControl(event.target) || !!closestAnchor(event.target);
     var a = closestAnchor(event.target);
     if (!a && !control && event.clientX != null &&
         document.elementsFromPoint) {
