@@ -99,9 +99,9 @@ Outputs in `build/app/outputs/flutter-apk/`:
 
 | APK | Use |
 |---|---|
-| `app-arm64-v8a-release.apk` (16.5 MB) | Almost all modern phones |
-| `app-armeabi-v7a-release.apk` (14.0 MB) | Older 32-bit phones |
-| `app-x86_64-release.apk` (17.8 MB) | Emulators / Chromebooks |
+| `app-arm64-v8a-release.apk` (17.8 MB) | Almost all modern phones |
+| `app-armeabi-v7a-release.apk` (15.4 MB) | Older 32-bit phones |
+| `app-x86_64-release.apk` (19.1 MB) | Emulators / Chromebooks |
 
 All three support **Android 7.0+** (`minSdk 24`) and target Android 16
 (`targetSdk 36`). They are currently signed with the debug key for
