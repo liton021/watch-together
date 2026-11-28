@@ -363,42 +363,46 @@ class _RoomScreenState extends State<RoomScreen> {
                       )
                     : Stack(
                         children: [
-                          InAppWebView(
-                            key: ValueKey<String>('$_sharedKind|$_sharedUrl'),
-                            initialUrlRequest: URLRequest(
-                              url: WebUri(_playerUrl(_sharedUrl!)),
+                          // Platform views need tight constraints; a bare
+                          // Stack child can collapse to zero height on Android.
+                          Positioned.fill(
+                            child: InAppWebView(
+                              key: ValueKey<String>('$_sharedKind|$_sharedUrl'),
+                              initialUrlRequest: URLRequest(
+                                url: WebUri(_playerUrl(_sharedUrl!)),
+                              ),
+                              initialUserScripts:
+                                  UnmodifiableListView<UserScript>(
+                                    _sharedKind == 'video'
+                                        ? <UserScript>[
+                                            UserScript(
+                                              source: _focusVideoScript,
+                                              injectionTime:
+                                                  UserScriptInjectionTime
+                                                      .AT_DOCUMENT_START,
+                                            ),
+                                          ]
+                                        : <UserScript>[],
+                                  ),
+                              initialSettings: InAppWebViewSettings(
+                                javaScriptEnabled: true,
+                                mediaPlaybackRequiresUserGesture: false,
+                                allowsInlineMediaPlayback: true,
+                                supportZoom: false,
+                                iframeAllow:
+                                    'autoplay; encrypted-media; fullscreen; picture-in-picture',
+                                iframeAllowFullscreen: true,
+                              ),
+                              onWebViewCreated: (controller) {
+                                _playerController = controller;
+                              },
+                              onLoadStop: (controller, url) {
+                                final event = _syncEvent;
+                                if (event != null) {
+                                  _applySync(event, _syncPosition);
+                                }
+                              },
                             ),
-                            initialUserScripts:
-                                UnmodifiableListView<UserScript>(
-                                  _sharedKind == 'video'
-                                      ? <UserScript>[
-                                          UserScript(
-                                            source: _focusVideoScript,
-                                            injectionTime:
-                                                UserScriptInjectionTime
-                                                    .AT_DOCUMENT_START,
-                                          ),
-                                        ]
-                                      : <UserScript>[],
-                                ),
-                            initialSettings: InAppWebViewSettings(
-                              javaScriptEnabled: true,
-                              mediaPlaybackRequiresUserGesture: false,
-                              allowsInlineMediaPlayback: true,
-                              supportZoom: false,
-                              iframeAllow:
-                                  'autoplay; encrypted-media; fullscreen; picture-in-picture',
-                              iframeAllowFullscreen: true,
-                            ),
-                            onWebViewCreated: (controller) {
-                              _playerController = controller;
-                            },
-                            onLoadStop: (controller, url) {
-                              final event = _syncEvent;
-                              if (event != null) {
-                                _applySync(event, _syncPosition);
-                              }
-                            },
                           ),
                           if (_floatingEmoji != null)
                             Center(
