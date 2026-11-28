@@ -115,6 +115,11 @@ class _RoomScreenState extends State<RoomScreen> {
     RoomService.instance.on('presence', _onPresence);
     RoomService.instance.on('reaction', _onReaction);
     RoomService.instance.on('playback', _onPlayback);
+
+    // If the host already shared something before this screen was opened,
+    // restore it from the service instead of showing "waiting" forever.
+    final existing = RoomService.instance.lastPlayback;
+    if (existing != null) _onPlayback(existing);
   }
 
   @override

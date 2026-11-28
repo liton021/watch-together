@@ -81,7 +81,7 @@ Never put the `service_role` key in this file.
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.3.3 release](https://github.com/liton021/watch-together/releases/tag/v0.3.3).
+[v0.3.4 release](https://github.com/liton021/watch-together/releases/tag/v0.3.4).
 
 ## Build APKs
 

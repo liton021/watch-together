@@ -15,6 +15,9 @@ class RoomService {
   String? _code;
   bool _isHost = false;
 
+  /// Kept so the host also sees what they just sent (self-echo).
+  Map<String, dynamic>? lastPlayback;
+
   final Map<String, void Function(Map<String, dynamic>)> _listeners =
       <String, void Function(Map<String, dynamic>)>{};
 
@@ -37,6 +40,7 @@ class RoomService {
   void off(String event) => _listeners.remove(event);
 
   void _emit(String event, Map<String, dynamic> payload) {
+    if (event == 'playback') lastPlayback = payload;
     _listeners[event]?.call(payload);
   }
 
@@ -50,7 +54,12 @@ class RoomService {
     _code = code.trim().toUpperCase();
     _isHost = asHost;
 
-    final channel = Supabase.instance.client.channel('watch:$_code');
+    // self: true makes broadcasts come back to the sender too, so the host's
+    // own room screen shows the video they just shared.
+    final channel = Supabase.instance.client.channel(
+      'watch:$_code',
+      opts: const RealtimeChannelConfig(self: true),
+    );
     _channel = channel;
 
     for (final event in <String>['playback', 'chat', 'reaction', 'leave']) {
@@ -82,6 +91,7 @@ class RoomService {
   Future<void> send(String event, Map<String, dynamic> payload) async {
     final channel = _channel;
     if (channel == null) return;
+    if (event == 'playback') lastPlayback = payload;
     await channel.sendBroadcastMessage(event: event, payload: payload);
   }
 
@@ -90,6 +100,7 @@ class RoomService {
     _channel = null;
     _code = null;
     _isHost = false;
+    lastPlayback = null;
     _listeners.clear();
 
     if (channel != null) {
