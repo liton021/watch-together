@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:watch_together/main.dart';
@@ -102,6 +104,46 @@ void main() {
     test('viewers never allow popups', () {
       expect(adBlockerScript(viewer: true), contains('var viewerMode = true;'));
       expect(adBlockerScript(), contains('var viewerMode = false;'));
+    });
+  });
+
+  group('obfuscated tracker redirects', () {
+    test('blocks the qpon popunder network', () {
+      expect(isBlockedAdHost('dt.powdrycycas.qpon'), isTrue);
+      expect(isAdUri(WebUri('https://dt.powdrycycas.qpon/cx/abc')), isTrue);
+    });
+
+    test('recognises delimiter-filled md= redirect chains', () {
+      final payload = base64.encode(
+        utf8.encode('{"uah":{"q":"https://watchseries.sc/details"}}'),
+      );
+      final clean =
+          'https://dt.powdrycycas.qpon/cx/AbCd*EfGh*IjKl?md=$payload&pr=xyz';
+      expect(isTrackerUri(WebUri(clean)), isTrue);
+      expect(isAdUri(WebUri(clean)), isTrue);
+    });
+
+    test('recovers the real URL even with injected percent junk', () {
+      final payload = base64.encode(
+        utf8.encode('{"uah":{"q":"https://watchseries.sc/details"}}'),
+      );
+      final obfuscated = payload.replaceAllMapped(
+        RegExp(r'.{17}'),
+        (match) => '${match.group(0)}%',
+      );
+      final tracker =
+          'https://dt.powdrycycas.qpon/cx/AbCd*EfGh*IjKl?md=$obfuscated&pr=xyz';
+      expect(decodeTrackerTarget(tracker), 'https://watchseries.sc/details');
+      expect(decodeTrackerTarget('https://example.com/movie'), isNull);
+
+      // Real networks also truncate the payload, leaving a broken last group.
+      final truncated = payload.substring(0, payload.length - 1);
+      final brokenTracker =
+          'https://dt.powdrycycas.qpon/cx/AbCd*EfGh*IjKl?md=$truncated&pr=xyz';
+      expect(
+        decodeTrackerTarget(brokenTracker),
+        'https://watchseries.sc/details',
+      );
     });
   });
 }

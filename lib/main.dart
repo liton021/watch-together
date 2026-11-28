@@ -504,6 +504,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
     if (_adBlockerEnabled && isBlockedNavigationUri(uri)) {
       _countBlocked();
+      final real = decodeTrackerTarget(target);
+      if (real != null && real != target) {
+        _openPageFromScript(real);
+      }
       return;
     }
 
@@ -665,6 +669,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
     if (_adBlockerEnabled && isBlockedNavigationUri(uri)) {
       _countBlocked();
+      // Obfuscated redirect chains often carry the real movie URL inside an
+      // md= payload. Skip the ad hop and continue to that URL instead.
+      final real = decodeTrackerTarget(uri.toString());
+      if (real != null && real != uri.toString()) {
+        _openPageFromScript(real);
+      }
       return NavigationActionPolicy.CANCEL;
     }
 

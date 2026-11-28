@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -6,10 +7,84 @@ import 'ad_blocklist.dart';
 
 export 'ad_blocklist.dart';
 
-/// True for ad, popunder and tracking hosts. Uses the full generated list.
+/// True for ad, popunder and tracking URLs. Uses the full generated list and
+/// recognises the shape of obfuscated redirect chains (many `*` separators
+/// plus an `md=` payload).
 bool isAdUri(WebUri? uri) {
   if (uri == null) return false;
-  return isBlockedAdHost(uri.host);
+  if (isBlockedAdHost(uri.host)) return true;
+  return isTrackerUri(uri);
+}
+
+/// Some networks hide the real destination in a long, delimiter-filled path
+/// and a base64 `md=` query parameter. Those links are never a real site.
+bool isTrackerUri(WebUri? uri) {
+  if (uri == null) return false;
+  final raw = uri.toString();
+  final separators = '*'.allMatches(raw).length;
+  if (separators < 2) return false;
+  return RegExp(r'[?&]md=', caseSensitive: false).hasMatch(raw);
+}
+
+/// Recovers the original URL carried inside a tracker's `md=` payload.
+///
+/// The payload is base64 JSON, sometimes with `%` and `*` characters injected
+/// to defeat naive decoders. Returns null when no safe HTTP(S) URL is found.
+String? decodeTrackerTarget(String raw) {
+  final match = RegExp(r'[?&]md=([^&]*)', caseSensitive: false).firstMatch(raw);
+  if (match == null) return null;
+
+  final captured = match.group(1)!;
+  final candidates = <String>{captured.replaceAll('%', '').replaceAll('*', '')};
+  try {
+    candidates.add(Uri.decodeFull(captured).replaceAll('%', ''));
+  } catch (_) {
+    // Invalid percent escapes are common in obfuscated payloads.
+  }
+
+  for (var candidate in candidates) {
+    candidate = candidate.replaceAll('-', '+').replaceAll('_', '/');
+    final padded = candidate + '=' * ((4 - candidate.length % 4) % 4);
+    final whole = candidate.length - candidate.length % 4;
+    final attempts = <String>[
+      padded,
+      if (whole != candidate.length) candidate.substring(0, whole),
+    ];
+    for (final attempt in attempts) {
+      try {
+        final text = utf8.decode(base64.decode(attempt), allowMalformed: true);
+        final urlMatch = RegExp(r'https?://[\x21-\x7e]+').firstMatch(text);
+        if (urlMatch == null) continue;
+        var found = urlMatch.group(0)!;
+        var end = found.length;
+        while (end > 0) {
+          final code = found.codeUnitAt(end - 1);
+          if (code == 0x22 ||
+              code == 0x27 ||
+              code == 0x5c ||
+              code == 0x7d ||
+              code == 0x5d ||
+              code == 0x2c ||
+              code == 0x20) {
+            end--;
+          } else {
+            break;
+          }
+        }
+        found = found.substring(0, end);
+        final parsed = Uri.tryParse(found);
+        if (parsed == null ||
+            (parsed.scheme != 'http' && parsed.scheme != 'https') ||
+            isBlockedAdHost(parsed.host)) {
+          continue;
+        }
+        return parsed.toString();
+      } catch (_) {
+        // Try the next decoding variant.
+      }
+    }
+  }
+  return null;
 }
 
 /// True for hosts that are blocked and for schemes that ad scripts abuse to
@@ -120,10 +195,56 @@ const String _adBlockerScript = r'''
     return null;
   }
 
+  // Popunder networks hide the destination in a long path full of `*` and a
+  // base64 md= payload. Strip the hop so taps land on the real movie page.
+  function looksLikeTracker(url) {
+    var text = String(url);
+    return /\.qpon(?:[/?#]|$)/i.test(text) ||
+      (text.indexOf('*') >= 0 && /[?&]md=/i.test(text));
+  }
+
+  function decodeTrackerTarget(raw) {
+    try {
+      var match = /[?&]md=([^&]*)/i.exec(String(raw));
+      if (!match) { return ''; }
+      var value = match[1].replace(/%/g, '').replace(/\*/g, '');
+      var variants = [value];
+      try { variants.push(decodeURIComponent(match[1]).replace(/%/g, '')); } catch (_) {}
+      for (var v = 0; v < variants.length; v++) {
+        var candidate = variants[v].replace(/-/g, '+').replace(/_/g, '/');
+        var padded = candidate;
+        while (padded.length % 4) { padded += '='; }
+        var whole = candidate.length - (candidate.length % 4);
+        var attempts = [padded];
+        if (whole !== candidate.length) {
+          attempts.push(candidate.substring(0, whole));
+        }
+        for (var a = 0; a < attempts.length; a++) {
+          try {
+            var text = atob(attempts[a]);
+            var hit = /https?:\/\/[^\x00-\x1f\s"'\\}]+/.exec(text);
+            if (!hit) { continue; }
+            var u = new URL(hit[0]);
+            if (/^https?:$/i.test(u.protocol) && !/\.qpon$/i.test(u.host)) {
+              return u.href;
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function unwrapTracker(url) {
+    if (!looksLikeTracker(url)) { return url; }
+    var real = decodeTrackerTarget(url);
+    return real || url;
+  }
+
   function hrefOf(a) {
     if (!a || !a.getAttribute) { return ''; }
     if (a.hasAttribute('download')) { return ''; }
-    var raw = a.getAttribute('href') || '';
+    var raw = unwrapTracker(a.getAttribute('href') || '');
     if (!raw || raw.charAt(0) === '#') { return ''; }
     if (/^(javascript|mailto|tel|blob|data):/i.test(raw)) { return ''; }
     try {
@@ -192,7 +313,7 @@ const String _adBlockerScript = r'''
 
   function openHere(url, player) {
     if (!url) { return; }
-    var target = absolute(url);
+    var target = absolute(unwrapTracker(url));
     if (!mayOpen(hostOf(target))) {
       reportBlocked(target, player);
       return;
@@ -234,12 +355,17 @@ const String _adBlockerScript = r'''
 
   function fixTargets() {
     var nodes = document.querySelectorAll(
-      'a[target], area[target], form[target], base[target]'
+      'a[href], area[href], a[target], area[target], form[target], base[target]'
     );
     for (var i = 0; i < nodes.length; i++) {
       var target = nodes[i].getAttribute('target');
       if (target && target !== '_self') {
         nodes[i].setAttribute('target', '_self');
+      }
+      var href = nodes[i].getAttribute('href');
+      if (href) {
+        var real = unwrapTracker(href);
+        if (real !== href) { nodes[i].setAttribute('href', real); }
       }
     }
   }

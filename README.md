@@ -20,7 +20,8 @@ default. Tap it to switch to `Ads: allowed`. It works in seven layers:
 
 1. **~9,800 blocked hosts** from the AdAway and pgl.yoyo.org public lists, plus
    manually added popunder networks (PopAds, PopCash, PropellerAds, Adsterra,
-   ExoClick, MGID, ...). Subdomains are covered too.
+   ExoClick, MGID, ...) and the whole `.qpon` TLD used by obfuscated redirect
+   chains. Subdomains are covered too.
 2. Network requests to those hosts are dropped before they reach the page.
 3. Navigation to them, including popup links and `intent://`/`market://`
    app-store redirects, is cancelled.
@@ -30,7 +31,9 @@ default. Tap it to switch to `Ads: allowed`. It works in seven layers:
    player/server control tap. Other popups are counted and discarded.
 6. **Tap-hijack protection**: a click on a real link goes straight to that
    link, so invisible overlays and click trackers never see it. A server-side
-   redirect to another host after a tap is also cancelled.
+   redirect to another host after a tap is also cancelled. Obfuscated
+   `dt.<random>.qpon/...?md=<base64>` links are decoded and the real movie URL
+   inside them is opened instead of the ad hop.
 7. Site `confirm()`/`alert()` gates and notification permission prompts are
    silently accepted/denied so viewers never get stuck behind a dialog.
 
@@ -94,7 +97,7 @@ Never put the `service_role` key in this file.
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.4.0 release](https://github.com/liton021/watch-together/releases/tag/v0.4.0).
+[v0.4.1 release](https://github.com/liton021/watch-together/releases/tag/v0.4.1).
 
 ## Build APKs
 

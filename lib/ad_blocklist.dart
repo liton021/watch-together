@@ -994,6 +994,11 @@ final Set<String> _blockedHosts = _blockedHostData
     .where((domain) => domain.isNotEmpty)
     .toSet();
 
+/// Whole TLDs and suffixes used almost exclusively for popunder/ad redirects.
+/// `qpon` is the network seen in the wild carrying long obfuscated tracking
+/// links that hide the real movie URL inside an `md=` base64 payload.
+const Set<String> _extraBlockedSuffixes = <String>{'qpon'};
+
 /// True for a blocked host and for every subdomain of a blocked host.
 bool isBlockedAdHost(String host) {
   if (host.isEmpty) return false;
@@ -1002,7 +1007,10 @@ bool isBlockedAdHost(String host) {
     candidate = candidate.substring(4);
   }
   while (candidate.isNotEmpty) {
-    if (_blockedHosts.contains(candidate)) return true;
+    if (_blockedHosts.contains(candidate) ||
+        _extraBlockedSuffixes.contains(candidate)) {
+      return true;
+    }
     final dot = candidate.indexOf('.');
     if (dot < 0 || dot == candidate.length - 1) return false;
     candidate = candidate.substring(dot + 1);
