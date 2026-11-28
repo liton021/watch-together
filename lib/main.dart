@@ -285,6 +285,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   String _currentUrl = '';
   bool _adBlockerEnabled = true;
   int _blockedCount = 0;
+  String? _pendingUrl;
 
   final List<_Bookmark> _bookmarks = <_Bookmark>[
     const _Bookmark('YouTube', 'https://www.youtube.com'),
@@ -353,9 +354,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   Future<void> _openUrl(String raw) async {
     final target = normalizeUrl(raw);
+    if (target.isEmpty) {
+      _showMessage('Type a website or search first.');
+      return;
+    }
     final controller = _controller;
-    if (target.isEmpty || controller == null) return;
+    if (controller == null) {
+      // Keep the address ready; it will load as soon as the WebView is created.
+      _pendingUrl = target;
+      _showMessage('Browser is still starting — opening $target shortly.');
+      return;
+    }
 
+    _pendingUrl = target;
     _addressFocus.unfocus();
     setState(() {
       _isLoading = true;
@@ -369,7 +380,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
       }
     });
 
-    await controller.loadUrl(urlRequest: URLRequest(url: WebUri(target)));
+    try {
+      await controller.loadUrl(urlRequest: URLRequest(url: WebUri(target)));
+    } catch (error) {
+      if (mounted) _showMessage('Could not open this link: $error');
+      return;
+    }
 
     if (kIsWeb && mounted) {
       // The web build uses an iframe, and cross-origin pages do not report
@@ -388,6 +404,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _addressFocus.unfocus();
     setState(() {
       _currentUrl = '';
+      _pendingUrl = null;
       _addressController.text = '';
       _isLoading = true;
       _progress = 0;
@@ -547,6 +564,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
     InAppWebViewController controller,
     WebResourceRequest request,
   ) async {
+    // Never replace the main document — that would look like a broken browser.
+    if (request.isForMainFrame ?? false) return null;
     if (_adBlockerEnabled && isAdUri(request.url)) {
       _blockedCount++;
       return WebResourceResponse(
@@ -567,7 +586,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
       _blockedCount++;
       return NavigationActionPolicy.CANCEL;
     }
-    return null;
+    // Be explicit on Android: a null return can leave the navigation hanging.
+    return NavigationActionPolicy.ALLOW;
   }
 
   static String _shorten(String text, [int max = 24]) {
@@ -917,6 +937,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
                                 'at': DateTime.now().toIso8601String(),
                               });
                         },
+                      );
+                    }
+
+                    final pending = _pendingUrl;
+                    if (pending != null) {
+                      _pendingUrl = null;
+                      controller.loadUrl(
+                        urlRequest: URLRequest(url: WebUri(pending)),
                       );
                     }
                   },
