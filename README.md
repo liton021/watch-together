@@ -13,20 +13,25 @@ A Flutter browser shell that will grow into a watch-together app.
 - WebView powered by `flutter_inappwebview`
 - **Ad blocker, on by default** — see below
 
-### Ad blocker
+### Ad blocker & tap protection
 
 The shield chip at the start of the bookmark bar shows `Ads: blocked` by
-default. Tap it to switch to `Ads: allowed`. It works in three ways:
+default. Tap it to switch to `Ads: allowed`. It works in five ways:
 
-1. Network requests to known ad/tracker hosts are dropped.
+1. Network requests to known ad, popunder and tracker hosts are dropped.
 2. Navigation to those hosts (including popup links) is cancelled.
-3. An injected style sheet hides ad-like elements, and `window.open` popups
-   are neutralised.
+3. An injected style sheet hides ad-like elements.
+4. `window.open` is only followed when it points at the same site or at the
+   link the user just tapped; unrelated popups are counted and discarded.
+5. **Tap-hijack protection**: a click on a real link goes straight to that
+   link, so invisible overlays or click-tracking scripts cannot redirect a
+   movie poster to an unrelated site. Links that would normally open in a new
+   tab are loaded in the same page instead.
 
-The small number on the chip counts how many requests/popups were blocked in
-the current session. This is a lightweight, conservative blocker rather than a
-full EasyList-style filter engine. It resets to **on** each time the app
-starts.
+The small number on the chip counts how many requests/popups/redirects were
+blocked in the current session. This is a lightweight, conservative blocker
+rather than a full EasyList-style filter engine. It resets to **on** each time
+the app starts.
 
 ## Run it
 
@@ -81,7 +86,7 @@ Never put the `service_role` key in this file.
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.3.5 release](https://github.com/liton021/watch-together/releases/tag/v0.3.5).
+[v0.3.6 release](https://github.com/liton021/watch-together/releases/tag/v0.3.6).
 
 ## Build APKs
 

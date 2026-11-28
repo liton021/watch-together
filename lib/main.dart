@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -40,14 +41,197 @@ const List<String> _adHosts = <String>[
   'sovrn.com',
   'ads-twitter.com',
   'doubleverify.net',
+  // Popunder / redirect networks that movie sites commonly use.
+  'popads.net',
+  'popcash.net',
+  'propellerads.com',
+  'propellerclick.com',
+  'onclickads.net',
+  'onclickalgo.com',
+  'adsterra.com',
+  'exoclick.com',
+  'exosrv.com',
+  'juicyads.com',
+  'trafficjunky.net',
+  'hilltopads.net',
+  'clickadu.com',
+  'adcash.com',
+  'mgid.com',
+  'zedo.com',
+  'bidvertiser.com',
+  'revcontent.com',
+  'popmyads.com',
+  // Analytics and session recording endpoints that profile taps/clicks.
+  'google-analytics.com',
+  'analytics.google.com',
+  'googletagmanager.com',
+  'hotjar.com',
+  'clarity.ms',
+  'mixpanel.com',
+  'segment.io',
+  'amplitude.com',
+  'fullstory.com',
+  'mouseflow.com',
+  'smartlook.com',
+  'luckyorange.com',
 ];
 
-/// Injected at document start: hides ad-like elements and blocks popups.
-/// Flutter syncs the on/off state by calling `window.__wtApplyAds()`.
+/// Injected at document start: hides ad-like elements, keeps `target="_blank"`
+/// links inside this WebView, and routes `window.open` through Flutter.
+///
+/// Movie sites usually reach the player with a popup link. Android drops
+/// those when multiple windows are off, so `window.open` is sent to Flutter
+/// (`wtOpenUrl`) and loaded in the same page after the ad check. Flutter
+/// syncs the on/off state by calling `window.__wtApplyAds()`.
 const String _adBlockerScript = r'''
 (function () {
   window.__wtAdsEnabled = true;
   window.__wtOriginalOpen = window.open;
+
+  function absolute(url) {
+    try {
+      return new URL(String(url), location.href).href;
+    } catch (_) {
+      return String(url);
+    }
+  }
+
+  function hostOf(url) {
+    try {
+      return new URL(String(url), location.href).host;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // A popup may only stay in this app when it points at the same site or at
+  // the link the user just tapped. Everything else is an ad/popunder.
+  function mayOpen(host) {
+    if (!host) { return false; }
+    if (host === location.host) { return true; }
+    var tap = window.__wtLastTap;
+    if (!tap || Date.now() - tap.at > 3000) { return false; }
+    if (tap.host && tap.host === host) { return true; }
+    // A real button (play/server) may legitimately open an external player.
+    if (!tap.href && tap.control) { return true; }
+    return false;
+  }
+
+  function stubWindow() {
+    var stub = {
+      closed: false,
+      focus: function () {},
+      close: function () {},
+      document: { write: function () {}, close: function () {} }
+    };
+    Object.defineProperty(stub, 'location', {
+      get: function () { return location.href; },
+      set: function (value) { openHere(value && value.href ? value.href : value); }
+    });
+    return stub;
+  }
+
+  function openHere(url) {
+    if (!url) { return; }
+    var target = absolute(url);
+    if (!mayOpen(hostOf(target))) {
+      try {
+        window.flutter_inappwebview.callHandler('wtBlockedPopup', target);
+      } catch (_) {}
+      return;
+    }
+    try {
+      window.flutter_inappwebview.callHandler('wtOpenUrl', target);
+    } catch (_) {
+      try { location.href = target; } catch (__) {}
+    }
+  }
+
+  window.__wtOpenSamePage = function (url) {
+    if (url) { openHere(url); }
+    // Some sites keep using the returned window, so hand back a harmless
+    // stand-in instead of null.
+    return stubWindow();
+  };
+
+  function keepInThisTab(el) {
+    if (!el || !el.getAttribute) { return; }
+    var target = el.getAttribute('target');
+    if (target === '_blank' || target === '_new') {
+      el.setAttribute('target', '_self');
+    }
+  }
+
+  function fixTargets() {
+    var nodes = document.querySelectorAll(
+      'a[target="_blank"], a[target="_new"], form[target="_blank"]'
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].setAttribute('target', '_self');
+    }
+  }
+
+  function closestAnchor(el) {
+    while (el && el !== document) {
+      if (el.tagName === 'A' && el.getAttribute) { return el; }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function hrefOf(a) {
+    if (!a || !a.getAttribute) { return ''; }
+    if (a.hasAttribute('download')) { return ''; }
+    var raw = a.getAttribute('href') || '';
+    if (!raw || raw.charAt(0) === '#') { return ''; }
+    if (/^(javascript|mailto|tel|blob|data):/i.test(raw)) { return ''; }
+    try {
+      var url = new URL(raw, location.href);
+      return /^https?:$/i.test(url.protocol) ? url.href : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function isControl(el) {
+    while (el && el !== document) {
+      var tag = (el.tagName || '').toUpperCase();
+      if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' ||
+          tag === 'TEXTAREA' || tag === 'VIDEO' || tag === 'AUDIO') {
+        return true;
+      }
+      var role = el.getAttribute ? el.getAttribute('role') : null;
+      if (role === 'button' || role === 'tab' || role === 'switch') {
+        return true;
+      }
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  // Records the link the user is aiming at. If a transparent ad overlay sits
+  // on top of a poster, look through it for the real <a> underneath.
+  function recordTap(event) {
+    if (event.button !== undefined && event.button !== 0) { return ''; }
+    var control = isControl(event.target);
+    var a = closestAnchor(event.target);
+    if (!a && !control && event.clientX != null &&
+        document.elementsFromPoint) {
+      var stack = document.elementsFromPoint(event.clientX, event.clientY) || [];
+      for (var i = 0; i < stack.length; i++) {
+        a = closestAnchor(stack[i]);
+        if (a) { break; }
+      }
+    }
+    var href = hrefOf(a);
+    window.__wtLastTap = {
+      href: href,
+      host: href ? hostOf(href) : '',
+      control: control,
+      at: Date.now()
+    };
+    return href;
+  }
 
   window.__wtApplyAds = function () {
     var on = window.__wtAdsEnabled !== false;
@@ -55,9 +239,7 @@ const String _adBlockerScript = r'''
     if (style) {
       style.disabled = !on;
     }
-    window.open = on
-      ? function () { return null; }
-      : window.__wtOriginalOpen;
+    window.open = on ? window.__wtOpenSamePage : window.__wtOriginalOpen;
   };
 
   var style = document.createElement('style');
@@ -89,6 +271,36 @@ const String _adBlockerScript = r'''
 
   (document.head || document.documentElement).appendChild(style);
   window.__wtApplyAds();
+  fixTargets();
+  setInterval(fixTargets, 1500);
+
+  window.addEventListener('pointerdown', function (event) {
+    if (window.__wtAdsEnabled === false) { return; }
+    recordTap(event);
+  }, true);
+
+  window.addEventListener('click', function (event) {
+    if (window.__wtAdsEnabled === false) { return; }
+    if (event.button !== 0 || event.metaKey || event.ctrlKey ||
+        event.shiftKey || event.altKey) {
+      return;
+    }
+    var href = recordTap(event);
+    if (!href) { return; }
+    // A real link was clicked. Follow it directly and stop the site's tap
+    // tracking listeners from redirecting the click to an ad.
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    try { location.assign(href); } catch (_) {}
+  }, true);
+
+  document.addEventListener('click', function (event) {
+    var el = event.target;
+    while (el && el !== document) {
+      keepInThisTab(el);
+      el = el.parentElement;
+    }
+  }, true);
 })();
 ''';
 
@@ -562,6 +774,41 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
+  /// Loads a URL that the page tried to open in a new window. Movie sites
+  /// reach the player through `window.open`, which Android WebView drops when
+  /// multiple windows are off. Known ad hosts are still filtered out.
+  Future<void> _openPageFromScript(String raw) async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    var target = raw;
+    if (!_isWebUrl(target)) {
+      try {
+        target = Uri.parse(_currentUrl).resolve(target).toString();
+      } catch (_) {
+        return;
+      }
+    }
+
+    final WebUri uri;
+    try {
+      uri = WebUri(target);
+    } catch (_) {
+      return;
+    }
+
+    if (_adBlockerEnabled && isAdUri(uri)) {
+      if (mounted) setState(() => _blockedCount++);
+      return;
+    }
+
+    try {
+      await controller.loadUrl(urlRequest: URLRequest(url: uri));
+    } catch (_) {
+      // Ignore malformed popup URLs.
+    }
+  }
+
   Future<void> _sendFrameToRoom({
     required String kind,
     required String url,
@@ -592,6 +839,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
       _showMessage('Browser is not ready yet.');
       return;
     }
+
+    // Always give immediate feedback, even if reading the URL takes a moment
+    // or a site dialog is in the way.
+    _showMessage('Sending this page to the room…');
 
     try {
       final actualUri = await controller.getUrl();
@@ -627,17 +878,102 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return null;
   }
 
-  /// Blocks direct navigation (including popup links) to ad hosts.
+  /// Reads the link recorded by the page's last tap, if it is still fresh.
+  Future<Map<String, dynamic>?> _recentTap() async {
+    final controller = _controller;
+    if (controller == null) return null;
+    try {
+      final raw = await controller.evaluateJavascript(
+        source:
+            'window.__wtLastTap ? JSON.stringify(window.__wtLastTap) : null',
+      );
+      if (raw is! String || raw.isEmpty || raw == 'null') return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final at = decoded['at'];
+      if (at is! num) return null;
+      final age = DateTime.now().millisecondsSinceEpoch - at.toInt();
+      if (age < 0 || age > 3000) return null;
+      return Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _clearTap() async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(source: 'window.__wtLastTap = null');
+    } catch (_) {
+      // The page may already be navigating away.
+    }
+  }
+
+  /// Blocks known ad hosts and tap-hijack redirects: a click on a poster may
+  /// only go to that poster's own link or stay on the current site.
   Future<NavigationActionPolicy?> _handleAdNavigation(
     InAppWebViewController controller,
     NavigationAction action,
   ) async {
-    if (_adBlockerEnabled && isAdUri(action.request.url)) {
-      _blockedCount++;
+    final uri = action.request.url;
+    if (uri == null) return NavigationActionPolicy.ALLOW;
+
+    if (_adBlockerEnabled && isAdUri(uri)) {
+      if (mounted) setState(() => _blockedCount++);
       return NavigationActionPolicy.CANCEL;
     }
-    // Be explicit on Android: a null return can leave the navigation hanging.
-    return NavigationActionPolicy.ALLOW;
+
+    if (!_adBlockerEnabled || !action.isForMainFrame || uri.host.isEmpty) {
+      return NavigationActionPolicy.ALLOW;
+    }
+
+    String currentHost = '';
+    try {
+      currentHost = WebUri(_currentUrl).host;
+    } catch (_) {
+      currentHost = '';
+    }
+    if (currentHost.isEmpty || uri.host == currentHost) {
+      // A normal in-site link. Consume the tap so a later redirect is not
+      // mistaken for a hijacked click.
+      _clearTap();
+      return NavigationActionPolicy.ALLOW;
+    }
+
+    final tap = await _recentTap();
+    if (tap == null) return NavigationActionPolicy.ALLOW;
+
+    _clearTap();
+
+    final tapHref = tap['href']?.toString() ?? '';
+    final tapHost = tap['host']?.toString() ?? '';
+    final tapControl = tap['control'] == true;
+    if (tapHref.isEmpty) {
+      if (tapControl) {
+        // A real button (for example a player or server button). Let the
+        // site navigate; blocking here would break external players.
+        return NavigationActionPolicy.ALLOW;
+      }
+      // A touch on plain page content tried to leave the site: hijack.
+      if (mounted) setState(() => _blockedCount++);
+      return NavigationActionPolicy.CANCEL;
+    }
+    if (tapHost.isNotEmpty && tapHost == uri.host) {
+      // This is exactly the link the user clicked.
+      return NavigationActionPolicy.ALLOW;
+    }
+
+    // The click tried to leave the site for an unrelated host.
+    if (mounted) setState(() => _blockedCount++);
+    if (tapHref.isNotEmpty && tapHref != uri.toString()) {
+      final target = tapHref;
+      Future<void>.delayed(
+        const Duration(milliseconds: 150),
+        () => _openPageFromScript(target),
+      );
+    }
+    return NavigationActionPolicy.CANCEL;
   }
 
   static String _shorten(String text, [int max = 24]) {
@@ -741,7 +1077,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           const SizedBox(width: 2),
           _toolbarButton(
             icon: Icons.cast_rounded,
-            tooltip: 'Send this video to the room',
+            tooltip: 'Send this page to the room',
             onPressed: _shareVideoFrame,
           ),
         ],
@@ -990,6 +1326,30 @@ class _BrowserScreenState extends State<BrowserScreen> {
                               });
                         },
                       );
+
+                      // Movie sites open the player in a new window. Load
+                      // that link in this WebView instead of losing it.
+                      controller.addJavaScriptHandler(
+                        handlerName: 'wtOpenUrl',
+                        callback: (arguments) {
+                          final raw = arguments.isNotEmpty
+                              ? arguments.first?.toString()
+                              : null;
+                          if (raw != null && raw.isNotEmpty) {
+                            _openPageFromScript(raw);
+                          }
+                          return null;
+                        },
+                      );
+
+                      // A popup to an unrelated host was stopped in JS.
+                      controller.addJavaScriptHandler(
+                        handlerName: 'wtBlockedPopup',
+                        callback: (arguments) {
+                          if (mounted) setState(() => _blockedCount++);
+                          return null;
+                        },
+                      );
                     }
 
                     final pending = _pendingUrl;
@@ -1017,6 +1377,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     _syncNavigationState();
                     _syncAdBlockerToPage();
                     _injectVideoScripts();
+                  },
+                  // A confirm() means the site is asking permission, so the
+                  // next navigation is intentional rather than a hijacked tap.
+                  onJsConfirm: (controller, request) async {
+                    _clearTap();
+                    return JsConfirmResponse(handledByClient: false);
                   },
                   onProgressChanged: (controller, progress) {
                     if (!mounted) return;

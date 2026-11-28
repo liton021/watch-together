@@ -59,6 +59,12 @@ void main() {
         isAdUri(WebUri('https://pagead2.googlesyndication.com/ad.js')),
         isTrue,
       );
+      expect(isAdUri(WebUri('https://yandex.popads.net/pop.js')), isTrue);
+      expect(
+        isAdUri(WebUri('https://www.google-analytics.com/collect')),
+        isTrue,
+      );
+      expect(isAdUri(WebUri('https://streamtape.com/e/abc')), isFalse);
       expect(isAdUri(WebUri('https://www.youtube.com')), isFalse);
       expect(isAdUri(null), isFalse);
     });

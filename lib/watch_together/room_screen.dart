@@ -396,6 +396,18 @@ class _RoomScreenState extends State<RoomScreen> {
                               onWebViewCreated: (controller) {
                                 _playerController = controller;
                               },
+                              // Movie sites often gate the player behind a
+                              // confirm() dialog. Viewers should not have to
+                              // tap through it, so accept it automatically.
+                              onJsConfirm: (controller, request) async {
+                                return JsConfirmResponse(
+                                  handledByClient: true,
+                                  action: JsConfirmResponseAction.CONFIRM,
+                                );
+                              },
+                              onJsAlert: (controller, request) async {
+                                return JsAlertResponse(handledByClient: true);
+                              },
                               onLoadStop: (controller, url) {
                                 final event = _syncEvent;
                                 if (event != null) {
