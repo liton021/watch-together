@@ -60,8 +60,13 @@ Inside the room:
 Tap the browser button to open the ad-blocked browser we built; from there you
 can visit video websites, then use **Back to room** to return.
 
-Supabase Realtime powers chat, reactions, presence, and (later) playback sync.
-Video playback itself is the next milestone.
+In the browser, the top-right **cast** button is a trigger: custom JavaScript
+finds the video or embedded player frame currently on screen (including
+YouTube/Vimeo-style iframes) and sends it to the room. Everyone's 16:9 screen
+loads that player while all non-video page UI is hidden with injected CSS/JS.
+Viewers do not need to open a browser — they simply wait in the room.
+
+Supabase Realtime powers chat, reactions, presence and playback events.
 
 ### Supabase setup
 
@@ -76,7 +81,7 @@ Never put the `service_role` key in this file.
 ## Downloads
 
 Ready-made, split APKs are available in the
-[v0.2.1 release](https://github.com/liton021/watch-together/releases/tag/v0.2.1).
+[v0.3.0 release](https://github.com/liton021/watch-together/releases/tag/v0.3.0).
 
 ## Build APKs
 

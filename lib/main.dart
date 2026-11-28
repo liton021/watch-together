@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -92,26 +93,73 @@ const String _adBlockerScript = r'''
 })();
 ''';
 
+/// Finds the frame that is actually showing a video right now: either a
+/// <video> element or an embedded player iframe (YouTube/Vimeo/etc.).
+const String _videoFinderScript = r'''
+(function () {
+  window.__wtFindVideoFrame = function () {
+    var candidates = [];
+    document.querySelectorAll('video').forEach(function (v, i) {
+      var r = v.getBoundingClientRect();
+      if (r.width > 10 && r.height > 10) {
+        candidates.push({
+          type: 'video',
+          index: i,
+          area: r.width * r.height,
+          playing: (!v.paused && v.currentTime > 0) ? 1 : 0,
+          position: v.currentTime || 0,
+          url: location.href
+        });
+      }
+    });
+    document.querySelectorAll('iframe').forEach(function (f, i) {
+      var r = f.getBoundingClientRect();
+      var src = f.src || '';
+      if (r.width > 10 && r.height > 10 &&
+          /(youtube|youtu\.be|vimeo|dailymotion|twitch|player|embed|video)/i.test(src)) {
+        candidates.push({
+          type: 'iframe',
+          index: i,
+          area: r.width * r.height,
+          playing: 1,
+          position: 0,
+          url: src
+        });
+      }
+    });
+    candidates.sort(function (a, b) {
+      return (b.playing - a.playing) || (b.area - a.area);
+    });
+    return candidates.length ? candidates[0] : null;
+  };
+})();
+''';
+
 /// Watches the host's <video> element so play/pause/seek can be broadcast.
 const String _videoHookScript = r'''
 (function () {
   function hook(v) {
     if (!v || v.__wtHooked) { return; }
     v.__wtHooked = true;
+    v.__wtIndex = Array.prototype.indexOf.call(
+      document.querySelectorAll('video'), v
+    );
     ['play', 'pause', 'seeked'].forEach(function (event) {
       v.addEventListener(event, function () {
         try {
           window.flutter_inappwebview.callHandler('wtVideoEvent', {
             event: event,
-            position: v.currentTime
+            position: v.currentTime,
+            kind: 'video',
+            index: v.__wtIndex,
+            url: location.href
           });
         } catch (_) {}
       });
     });
   }
   setInterval(function () {
-    var v = document.querySelector('video');
-    if (v) { hook(v); }
+    document.querySelectorAll('video').forEach(hook);
   }, 500);
 })();
 ''';
@@ -545,18 +593,73 @@ class _BrowserScreenState extends State<BrowserScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _shareVideo() async {
-    if (_currentUrl.isEmpty) {
-      _showMessage('Open a website first, then share the video.');
+  /// User scripts are injected at document start on mobile. Web previews use
+  /// an iframe that ignores them, so inject again after the page loads.
+  Future<void> _injectVideoScripts() async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(source: _videoFinderScript);
+      await controller.evaluateJavascript(source: _videoHookScript);
+    } catch (_) {
+      // Cross-origin pages cannot be scripted from the web preview.
+    }
+  }
+
+  /// The top-right button is a trigger: it finds the video frame currently on
+  /// screen and mirrors it into every member's 16:9 room screen.
+  Future<void> _shareVideoFrame() async {
+    if (!_isHosting) {
+      _showMessage('Create or join a room first.');
       return;
     }
-    await RoomService.instance.send('playback', <String, dynamic>{
-      'url': _currentUrl,
-      'event': 'play',
-      'position': 0,
-      'at': DateTime.now().toIso8601String(),
-    });
-    _showMessage('Shared with room ${RoomService.instance.code}.');
+    final controller = _controller;
+    if (controller == null) {
+      _showMessage('Browser is not ready yet.');
+      return;
+    }
+
+    try {
+      // Make sure the finder exists even if page-load callbacks were skipped.
+      await controller.evaluateJavascript(source: _videoFinderScript);
+      final raw = await controller.evaluateJavascript(
+        source:
+            '(function(){try{var f=window.__wtFindVideoFrame();'
+            'return f?JSON.stringify(f):"";}catch(e){return "";}})()',
+      );
+      final text = raw?.toString() ?? '';
+      if (text.isEmpty || text == 'null') {
+        _showMessage('No visible video or player frame found on this page.');
+        return;
+      }
+
+      Object? decoded = jsonDecode(text);
+      if (decoded is String) decoded = jsonDecode(decoded);
+      if (decoded is! Map<String, dynamic>) {
+        _showMessage('Unexpected player data.');
+        return;
+      }
+      final frame = decoded;
+      final kind = frame['type']?.toString() ?? 'iframe';
+      final url =
+          (kind == 'iframe' ? frame['url']?.toString() : _currentUrl) ?? '';
+      if (url.isEmpty) {
+        _showMessage('Could not read this player address.');
+        return;
+      }
+
+      await RoomService.instance.send('playback', <String, dynamic>{
+        'kind': kind,
+        'url': url,
+        'index': frame['index'] ?? 0,
+        'position': frame['position'] ?? 0,
+        'event': 'play',
+        'at': DateTime.now().toIso8601String(),
+      });
+      _showMessage('Sent to room ${RoomService.instance.code}.');
+    } catch (error) {
+      _showMessage('Could not share this video: $error');
+    }
   }
 
   /// Drops requests to known ad hosts. Returning null lets them through.
@@ -690,9 +793,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
           ),
           const SizedBox(width: 2),
           _toolbarButton(
-            icon: Icons.keyboard_return_rounded,
-            tooltip: 'Go',
-            onPressed: () => _openUrl(_addressController.text),
+            icon: Icons.cast_rounded,
+            tooltip: 'Send this video to the room',
+            onPressed: _shareVideoFrame,
           ),
         ],
       ),
@@ -846,7 +949,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             _buildSimpleChip(
               icon: Icons.cast_rounded,
               label: 'Share',
-              onTap: _shareVideo,
+              onTap: _shareVideoFrame,
             ),
             const SizedBox(width: 8),
           ],
@@ -905,6 +1008,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       source: _videoHookScript,
                       injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
+                    UserScript(
+                      source: _videoFinderScript,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
                   ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
@@ -931,7 +1038,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           if (data is! Map) return;
                           RoomService.instance
                               .send('playback', <String, dynamic>{
-                                'url': _currentUrl,
+                                'kind': data['kind']?.toString() ?? 'video',
+                                'url': data['url']?.toString() ?? _currentUrl,
+                                'index': data['index'] ?? 0,
                                 'event': data['event']?.toString() ?? 'play',
                                 'position': data['position'],
                                 'at': DateTime.now().toIso8601String(),
@@ -964,6 +1073,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     });
                     _syncNavigationState();
                     _syncAdBlockerToPage();
+                    _injectVideoScripts();
                   },
                   onProgressChanged: (controller, progress) {
                     if (!mounted) return;

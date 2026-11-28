@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../main.dart';
 import 'room_service.dart';
@@ -11,6 +13,43 @@ const Color _roomBackground = Color(0xFF06070B);
 const Color _roomPanel = Color(0xFF12161F);
 const Color _roomLine = Color(0xFF252C3B);
 const Color _roomAccent = Color(0xFF8B9DFF);
+
+/// Hides everything on the host's page except the playing <video>.
+const String _focusVideoScript = r'''
+(function () {
+  function focusVideo() {
+    var videos = document.querySelectorAll('video');
+    if (!videos.length) { return; }
+    var v = videos[0];
+    document.querySelectorAll('body *').forEach(function (el) {
+      if (el === v || v.contains(el) || el.contains(v)) {
+        if (el !== v) { el.style.setProperty('overflow', 'visible', 'important'); }
+        return;
+      }
+      el.style.setProperty('display', 'none', 'important');
+    });
+    v.style.setProperty('position', 'fixed', 'important');
+    v.style.setProperty('left', '0', 'important');
+    v.style.setProperty('top', '0', 'important');
+    v.style.setProperty('width', '100vw', 'important');
+    v.style.setProperty('height', '100vh', 'important');
+    v.style.setProperty('object-fit', 'contain', 'important');
+    v.style.setProperty('background', '#000', 'important');
+    v.style.setProperty('z-index', '2147483647', 'important');
+  }
+  window.__wtSync = function (event, position) {
+    var v = document.querySelector('video');
+    if (!v) { setTimeout(function () { window.__wtSync(event, position); }, 400); return; }
+    focusVideo();
+    if (event === 'pause') { v.pause(); }
+    else { v.play().catch(function () {}); }
+    if (typeof position === 'number' && Math.abs(v.currentTime - position) > 1.5) {
+      try { v.currentTime = position; } catch (_) {}
+    }
+  };
+  setInterval(focusVideo, 1200);
+})();
+''';
 
 class RoomScreen extends StatefulWidget {
   const RoomScreen({super.key, required this.code, required this.isHost});
@@ -30,6 +69,12 @@ class _RoomScreenState extends State<RoomScreen> {
   int _members = 1;
   String? _floatingEmoji;
 
+  InAppWebViewController? _playerController;
+  String? _sharedKind;
+  String? _sharedUrl;
+  String? _syncEvent;
+  double? _syncPosition;
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +84,7 @@ class _RoomScreenState extends State<RoomScreen> {
     RoomService.instance.on('chat', _onChat);
     RoomService.instance.on('presence', _onPresence);
     RoomService.instance.on('reaction', _onReaction);
+    RoomService.instance.on('playback', _onPlayback);
   }
 
   @override
@@ -46,6 +92,7 @@ class _RoomScreenState extends State<RoomScreen> {
     RoomService.instance.off('chat');
     RoomService.instance.off('presence');
     RoomService.instance.off('reaction');
+    RoomService.instance.off('playback');
     _chatController.dispose();
     super.dispose();
   }
@@ -73,6 +120,64 @@ class _RoomScreenState extends State<RoomScreen> {
         if (mounted) setState(() => _floatingEmoji = null);
       }),
     );
+  }
+
+  void _onPlayback(Map<String, dynamic> payload) {
+    if (!mounted) return;
+
+    final kind = payload['kind']?.toString();
+    final url = payload['url']?.toString();
+    if (kind != null && url != null && url.isNotEmpty) {
+      if (kind != _sharedKind || url != _sharedUrl) {
+        setState(() {
+          _sharedKind = kind;
+          _sharedUrl = url;
+          _syncEvent = payload['event']?.toString() ?? 'play';
+          _syncPosition = (payload['position'] as num?)?.toDouble();
+        });
+      } else {
+        _applySync(
+          payload['event']?.toString(),
+          (payload['position'] as num?)?.toDouble(),
+        );
+      }
+      return;
+    }
+
+    _applySync(
+      payload['event']?.toString(),
+      (payload['position'] as num?)?.toDouble(),
+    );
+  }
+
+  String _playerUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return url;
+    if (uri.host.contains('youtube.com') &&
+        !uri.queryParameters.containsKey('autoplay')) {
+      return uri
+          .replace(
+            queryParameters: <String, String>{
+              ...uri.queryParameters,
+              'autoplay': '1',
+              'playsinline': '1',
+            },
+          )
+          .toString();
+    }
+    return url;
+  }
+
+  Future<void> _applySync(String? event, double? position) async {
+    if (event == null || _sharedKind != 'video') return;
+    final controller = _playerController;
+    if (controller == null) return;
+    final value = position == null ? 'null' : position.toString();
+    try {
+      await controller.evaluateJavascript(
+        source: 'if (window.__wtSync) window.__wtSync(\'$event\', $value);',
+      );
+    } catch (_) {}
   }
 
   void _showMessage(String message) {
@@ -111,11 +216,23 @@ class _RoomScreenState extends State<RoomScreen> {
     });
   }
 
-  Widget _control(IconData icon, String tooltip) {
+  Future<void> _sendControl(String event) async {
+    await RoomService.instance.send('playback', <String, dynamic>{
+      'event': event,
+      'position': _syncPosition ?? 0,
+      'at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Widget _control(IconData icon, String tooltip, {VoidCallback? onPressed}) {
     return IconButton(
-      onPressed: null,
-      icon: Icon(icon, size: 20, color: Colors.white38),
-      tooltip: '$tooltip (next step)',
+      onPressed: onPressed,
+      icon: Icon(
+        icon,
+        size: 20,
+        color: onPressed == null ? Colors.white38 : Colors.white,
+      ),
+      tooltip: tooltip,
     );
   }
 
@@ -172,40 +289,91 @@ class _RoomScreenState extends State<RoomScreen> {
               aspectRatio: 16 / 9,
               child: Container(
                 color: Colors.black,
-                alignment: Alignment.center,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.video_library_outlined,
-                          size: 54,
-                          color: Colors.white24,
-                        ),
-                        const SizedBox(height: 10),
-                        const Text(
-                          'Video will appear here',
-                          style: TextStyle(color: Colors.white38, fontSize: 14),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Room ${widget.code} · $_members watching',
-                          style: const TextStyle(
-                            color: Colors.white24,
-                            fontSize: 11,
+                child: _sharedUrl == null
+                    ? Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.video_library_outlined,
+                                size: 54,
+                                color: Colors.white24,
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'Waiting for the host to send a video',
+                                style: TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Room ${widget.code} · $_members watching',
+                                style: const TextStyle(
+                                  color: Colors.white24,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
                           ),
-                        ),
-                      ],
-                    ),
-                    if (_floatingEmoji != null)
-                      Text(
-                        _floatingEmoji!,
-                        style: const TextStyle(fontSize: 60),
+                          if (_floatingEmoji != null)
+                            Text(
+                              _floatingEmoji!,
+                              style: const TextStyle(fontSize: 60),
+                            ),
+                        ],
+                      )
+                    : Stack(
+                        children: [
+                          InAppWebView(
+                            key: ValueKey<String>('$_sharedKind|$_sharedUrl'),
+                            initialUrlRequest: URLRequest(
+                              url: WebUri(_playerUrl(_sharedUrl!)),
+                            ),
+                            initialUserScripts:
+                                UnmodifiableListView<UserScript>(
+                                  _sharedKind == 'video'
+                                      ? <UserScript>[
+                                          UserScript(
+                                            source: _focusVideoScript,
+                                            injectionTime:
+                                                UserScriptInjectionTime
+                                                    .AT_DOCUMENT_START,
+                                          ),
+                                        ]
+                                      : <UserScript>[],
+                                ),
+                            initialSettings: InAppWebViewSettings(
+                              javaScriptEnabled: true,
+                              mediaPlaybackRequiresUserGesture: false,
+                              allowsInlineMediaPlayback: true,
+                              supportZoom: false,
+                              iframeAllow:
+                                  'autoplay; encrypted-media; fullscreen; picture-in-picture',
+                              iframeAllowFullscreen: true,
+                            ),
+                            onWebViewCreated: (controller) {
+                              _playerController = controller;
+                            },
+                            onLoadStop: (controller, url) {
+                              final event = _syncEvent;
+                              if (event != null) {
+                                _applySync(event, _syncPosition);
+                              }
+                            },
+                          ),
+                          if (_floatingEmoji != null)
+                            Center(
+                              child: Text(
+                                _floatingEmoji!,
+                                style: const TextStyle(fontSize: 60),
+                              ),
+                            ),
+                        ],
                       ),
-                  ],
-                ),
               ),
             ),
             Container(
@@ -220,8 +388,20 @@ class _RoomScreenState extends State<RoomScreen> {
               ),
               child: Row(
                 children: [
-                  _control(Icons.play_arrow_rounded, 'Play'),
-                  _control(Icons.pause_rounded, 'Pause'),
+                  _control(
+                    Icons.play_arrow_rounded,
+                    'Play',
+                    onPressed: widget.isHost
+                        ? () => _sendControl('play')
+                        : null,
+                  ),
+                  _control(
+                    Icons.pause_rounded,
+                    'Pause',
+                    onPressed: widget.isHost
+                        ? () => _sendControl('pause')
+                        : null,
+                  ),
                   _control(Icons.replay_10_rounded, 'Back 10s'),
                   _control(Icons.forward_10_rounded, 'Forward 10s'),
                   _control(Icons.volume_up_rounded, 'Volume'),
