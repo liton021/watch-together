@@ -18,9 +18,16 @@ const Color _roomAccent = Color(0xFF8B9DFF);
 const String _focusVideoScript = r'''
 (function () {
   function focusVideo() {
-    var videos = document.querySelectorAll('video');
+    var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
     if (!videos.length) { return; }
     var v = videos[0];
+    var best = -1;
+    videos.forEach(function (candidate) {
+      var r = candidate.getBoundingClientRect();
+      var score = r.width * r.height +
+        ((!candidate.paused && candidate.currentTime > 0) ? 1000000 : 0);
+      if (score > best) { best = score; v = candidate; }
+    });
     document.querySelectorAll('body *').forEach(function (el) {
       if (el === v || v.contains(el) || el.contains(v)) {
         if (el !== v) { el.style.setProperty('overflow', 'visible', 'important'); }
@@ -38,7 +45,11 @@ const String _focusVideoScript = r'''
     v.style.setProperty('z-index', '2147483647', 'important');
   }
   window.__wtSync = function (event, position) {
-    var v = document.querySelector('video');
+    var v = null, best = -1;
+    Array.prototype.slice.call(document.querySelectorAll('video')).forEach(function (c) {
+      var r = c.getBoundingClientRect();
+      if (r.width * r.height > best) { best = r.width * r.height; v = c; }
+    });
     if (!v) { setTimeout(function () { window.__wtSync(event, position); }, 400); return; }
     focusVideo();
     if (event === 'pause') { v.pause(); }

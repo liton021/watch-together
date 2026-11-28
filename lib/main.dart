@@ -606,8 +606,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
-  /// The top-right button is a trigger: it finds the video frame currently on
-  /// screen and mirrors it into every member's 16:9 room screen.
+  Future<void> _sendFrameToRoom({
+    required String kind,
+    required String url,
+    int index = 0,
+    double position = 0,
+  }) async {
+    await RoomService.instance.send('playback', <String, dynamic>{
+      'kind': kind,
+      'url': url,
+      'index': index,
+      'position': position,
+      'event': 'play',
+      'at': DateTime.now().toIso8601String(),
+    });
+    _showMessage('Sent to room ${RoomService.instance.code}.');
+  }
+
+  /// The top-right button is a trigger: find the player frame on screen and
+  /// mirror it into every member's 16:9 room screen. If detection fails, the
+  /// current page is sent instead and the viewer hides its non-video UI.
   Future<void> _shareVideoFrame() async {
     if (!_isHosting) {
       _showMessage('Create or join a room first.');
@@ -627,36 +645,41 @@ class _BrowserScreenState extends State<BrowserScreen> {
             '(function(){try{var f=window.__wtFindVideoFrame();'
             'return f?JSON.stringify(f):"";}catch(e){return "";}})()',
       );
+
       final text = raw?.toString() ?? '';
-      if (text.isEmpty || text == 'null') {
-        _showMessage('No visible video or player frame found on this page.');
-        return;
+      Map<String, dynamic>? frame;
+      if (text.isNotEmpty && text != 'null') {
+        try {
+          Object? decoded = jsonDecode(text);
+          if (decoded is String) decoded = jsonDecode(decoded);
+          if (decoded is Map<String, dynamic>) frame = decoded;
+        } catch (_) {}
       }
 
-      Object? decoded = jsonDecode(text);
-      if (decoded is String) decoded = jsonDecode(decoded);
-      if (decoded is! Map<String, dynamic>) {
-        _showMessage('Unexpected player data.');
-        return;
-      }
-      final frame = decoded;
-      final kind = frame['type']?.toString() ?? 'iframe';
-      final url =
-          (kind == 'iframe' ? frame['url']?.toString() : _currentUrl) ?? '';
-      if (url.isEmpty) {
-        _showMessage('Could not read this player address.');
-        return;
+      if (frame != null) {
+        final kind = frame['type']?.toString() ?? 'iframe';
+        final url =
+            (kind == 'iframe' ? frame['url']?.toString() : _currentUrl) ?? '';
+        if (url.isNotEmpty) {
+          await _sendFrameToRoom(
+            kind: kind,
+            url: url,
+            index: (frame['index'] as num?)?.toInt() ?? 0,
+            position: (frame['position'] as num?)?.toDouble() ?? 0,
+          );
+          return;
+        }
       }
 
-      await RoomService.instance.send('playback', <String, dynamic>{
-        'kind': kind,
-        'url': url,
-        'index': frame['index'] ?? 0,
-        'position': frame['position'] ?? 0,
-        'event': 'play',
-        'at': DateTime.now().toIso8601String(),
-      });
-      _showMessage('Sent to room ${RoomService.instance.code}.');
+      // Fallback: mirror the page itself. The viewer's injected CSS/JS hides
+      // everything except the video, so YouTube-style pages still work.
+      final page = _currentUrl;
+      if (page.isEmpty || !_isWebUrl(page)) {
+        _showMessage('Open a website first, then press the cast button.');
+        return;
+      }
+      await _sendFrameToRoom(kind: 'video', url: page);
+      _showMessage('No player detected — sent the current page instead.');
     } catch (error) {
       _showMessage('Could not share this video: $error');
     }
